@@ -7,7 +7,8 @@ import math
 import os
 import json
 from datetime import datetime
-from tqdm import tqdm
+from tqdm.notebook import tqdm # swap with line below if not using jupyter notebook
+#from tqdm import tqdm
 from ms_data_funcs import calculate_max_mz, tokenize_spectrum
 
 class PositionalEncoding(nn.Module):
@@ -157,7 +158,7 @@ def load_model_from_meta(meta_path):
     
     return model, optimizer, criterion, meta['training']['num_epochs']
 
-def train_model(model, train_loader, test_loader, optimizer, criterion, num_epochs=50, evaluate=True, verbose=1, from_checkpoint=False, checkpoint_path=None):
+def train_model(model, train_loader, test_loader, optimizer, criterion, num_epochs=50, evaluate=True, verbose=1, checkpoint_path=None, from_checkpoint=None):
     device = next(model.parameters()).device
     if evaluate:
         history = {'loss':{}, 'accuracy':{}}
@@ -167,13 +168,14 @@ def train_model(model, train_loader, test_loader, optimizer, criterion, num_epoc
     # Initialize checkpoint folder and load from checkpoint if specified
     if checkpoint_path is not None:
         if from_checkpoint:
-            # Find the latest checkpoint folder
-            checkpoint_folders = [f for f in os.listdir(checkpoint_path) if f.startswith('checkpoint_')]
-            if checkpoint_folders:
-                latest_folder = max(checkpoint_folders, key=lambda x: int(x.split('_')[1]))
-                checkpoint_folder = os.path.join(checkpoint_path, latest_folder)
+            # Use the specified checkpoint folder
+            checkpoint_folder = os.path.join(checkpoint_path, from_checkpoint)
+            if os.path.exists(checkpoint_folder):
+                meta_file = os.path.join(checkpoint_folder, "model_meta.json")
+                if os.path.exists(meta_file):
+                    model, optimizer, criterion, num_epochs = load_model_from_meta(meta_file)
+                    model = model.to(device)
                 
-                # Find the latest checkpoint file
                 checkpoint_files = [f for f in os.listdir(checkpoint_folder) if f.endswith('.pth')]
                 if checkpoint_files:
                     latest_checkpoint = max(checkpoint_files, key=lambda x: int(x.split('_')[-1].split('.')[0]))
@@ -184,17 +186,15 @@ def train_model(model, train_loader, test_loader, optimizer, criterion, num_epoc
                     print(f"Resuming from checkpoint: {latest_checkpoint}")
                 else:
                     start_epoch = 0
-                    print("No checkpoint file found. Starting from scratch.")
+                    print("No checkpoint file found in the specified folder. Starting from scratch.")
             else:
-                checkpoint_folder = init_checkpoint_folder(checkpoint_path)
-                start_epoch = 0
-                print("No checkpoint folder found. Starting from scratch.")
+                raise ValueError(f"Specified checkpoint folder {from_checkpoint} does not exist.")
         else:
+            # Create a new checkpoint folder
             checkpoint_folder = init_checkpoint_folder(checkpoint_path)
             start_epoch = 0
         
-        # Only save meta information if we're not resuming from a checkpoint
-        if not from_checkpoint or start_epoch == 0:
+        if not from_checkpoint:
             save_model_meta(checkpoint_folder, model, optimizer, criterion, num_epochs, train_loader, test_loader)
     else:
         checkpoint_folder = None
@@ -256,9 +256,10 @@ def train_model(model, train_loader, test_loader, optimizer, criterion, num_epoc
             
             accuracy = correct / total
             history['accuracy'][epoch] = accuracy
-            print(f'Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(train_loader):.4f}, Accuracy: {accuracy:.4f}')
+            #print(f'Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(train_loader):.4f}, Accuracy: {accuracy:.4f}')
         else:
-            print(f'Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(train_loader):.4f}')
+            #print(f'Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(train_loader):.4f}')
+            pass
         
         if checkpoint_folder:
             checkpoint = {
