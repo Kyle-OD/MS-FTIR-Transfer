@@ -4,6 +4,9 @@ import torch.nn.functional as F
 from torch import optim, nn
 from torch.utils.data import TensorDataset, DataLoader, Dataset
 import math
+import os
+import json
+from datetime import datetime
 from tqdm import tqdm
 from ms_data_funcs import calculate_max_mz, tokenize_spectrum
 
@@ -85,9 +88,74 @@ def load_tokenized_data(X_train, y_train, X_test, y_test, method, max_mz=None, b
     
     return train_loader, test_loader
 
-def init_checkpoint_folder(path):
+def init_checkpoint_folder(base_path):
+    """Initialize a new numbered folder for checkpoints."""
+    i = 1
+    while True:
+        folder_path = os.path.join(base_path, f"checkpoint_{i}")
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+            return folder_path
+        i += 1
 
-    return path
+def save_model_meta(folder_path, model, optimizer, criterion, num_epochs, train_loader, test_loader):
+    """Save comprehensive model metadata to a JSON file."""
+    meta = {
+        "model": {
+            "name": type(model).__name__,
+            "num_classes": model.fc.out_features,
+            "embed_depth": model.embedding.in_features,
+            "d_model": model.d_model,
+            "nhead": model.transformer_encoder.layers[0].self_attn.num_heads,
+            "num_layers": len(model.transformer_encoder.layers),
+            "dim_feedforward": model.transformer_encoder.layers[0].linear1.out_features,
+            "dropout": model.transformer_encoder.layers[0].dropout.p
+        },
+        "optimizer": {
+            "name": type(optimizer).__name__,
+            "lr": optimizer.param_groups[0]['lr'],
+            "weight_decay": optimizer.param_groups[0].get('weight_decay', 0)
+        },
+        "criterion": type(criterion).__name__,
+        "training": {
+            "num_epochs": num_epochs,
+            "batch_size": train_loader.batch_size,
+            "train_size": len(train_loader.dataset),
+            "test_size": len(test_loader.dataset)
+        },
+        "data": {
+            "input_shape": tuple(next(iter(train_loader))[0].shape),
+            "tokenization_method": getattr(train_loader.dataset, 'tokenization_method', 'unknown'),
+            "max_mz": getattr(train_loader.dataset, 'max_mz', 'unknown')
+        },
+        "device": str(torch.cuda.get_device_name(0)),
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    with open(os.path.join(folder_path, "model_meta.json"), "w") as f:
+        json.dump(meta, f, indent=4)
+
+def load_model_from_meta(meta_path):
+    """Load model and recreate training setup from metadata."""
+    with open(meta_path, 'r') as f:
+        meta = json.load(f)
+    
+    model = MS_VIT(
+        num_classes=meta['model']['num_classes'],
+        embed_depth=meta['model']['embed_depth'],
+        d_model=meta['model']['d_model'],
+        nhead=meta['model']['nhead'],
+        num_layers=meta['model']['num_layers'],
+        dim_feedforward=meta['model']['dim_feedforward'],
+        dropout=meta['model']['dropout']
+    )
+    
+    optimizer_class = getattr(torch.optim, meta['optimizer']['name'])
+    optimizer = optimizer_class(model.parameters(), lr=meta['optimizer']['lr'], weight_decay=meta['optimizer']['weight_decay'])
+    
+    criterion = getattr(torch.nn, meta['criterion'])()
+    
+    return model, optimizer, criterion, meta['training']['num_epochs']
 
 def train_model(model, train_loader, test_loader, optimizer, criterion, num_epochs=50, evaluate=True, verbose=1, from_checkpoint=False, checkpoint_path=None):
     device = next(model.parameters()).device
@@ -95,11 +163,44 @@ def train_model(model, train_loader, test_loader, optimizer, criterion, num_epoc
         history = {'loss':{}, 'accuracy':{}}
     else:
         history = {'loss':{}}
-    checkpoint = False
+
+    # Initialize checkpoint folder and load from checkpoint if specified
     if checkpoint_path is not None:
-        checkpoint_path = init_checkpoint_folder(checkpoint_path)
-        checkpoint = True
-    for epoch in range(num_epochs):
+        if from_checkpoint:
+            # Find the latest checkpoint folder
+            checkpoint_folders = [f for f in os.listdir(checkpoint_path) if f.startswith('checkpoint_')]
+            if checkpoint_folders:
+                latest_folder = max(checkpoint_folders, key=lambda x: int(x.split('_')[1]))
+                checkpoint_folder = os.path.join(checkpoint_path, latest_folder)
+                
+                # Find the latest checkpoint file
+                checkpoint_files = [f for f in os.listdir(checkpoint_folder) if f.endswith('.pth')]
+                if checkpoint_files:
+                    latest_checkpoint = max(checkpoint_files, key=lambda x: int(x.split('_')[-1].split('.')[0]))
+                    checkpoint = torch.load(os.path.join(checkpoint_folder, latest_checkpoint))
+                    model.load_state_dict(checkpoint['model_state_dict'])
+                    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    start_epoch = checkpoint['epoch'] + 1
+                    print(f"Resuming from checkpoint: {latest_checkpoint}")
+                else:
+                    start_epoch = 0
+                    print("No checkpoint file found. Starting from scratch.")
+            else:
+                checkpoint_folder = init_checkpoint_folder(checkpoint_path)
+                start_epoch = 0
+                print("No checkpoint folder found. Starting from scratch.")
+        else:
+            checkpoint_folder = init_checkpoint_folder(checkpoint_path)
+            start_epoch = 0
+        
+        # Only save meta information if we're not resuming from a checkpoint
+        if not from_checkpoint or start_epoch == 0:
+            save_model_meta(checkpoint_folder, model, optimizer, criterion, num_epochs, train_loader, test_loader)
+    else:
+        checkpoint_folder = None
+        start_epoch = 0
+
+    for epoch in range(start_epoch, num_epochs):
         model.train()
         total_loss = 0
         
@@ -125,7 +226,8 @@ def train_model(model, train_loader, test_loader, optimizer, criterion, num_epoc
             if verbose == 1:
                 train_pbar.update(1)
                 train_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
-        history['loss'][epoch] = total_loss
+        
+        history['loss'][epoch] = total_loss / len(train_loader)
 
         if evaluate:
             # Evaluate on test set
@@ -157,7 +259,16 @@ def train_model(model, train_loader, test_loader, optimizer, criterion, num_epoc
             print(f'Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(train_loader):.4f}, Accuracy: {accuracy:.4f}')
         else:
             print(f'Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(train_loader):.4f}')
-        if checkpoint:
-            torch.save(f"{checkpoint_path}_epoch_{epoch}.pth")
-    return model, history
+        
+        if checkpoint_folder:
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': history['loss'][epoch],
+            }
+            if evaluate:
+                checkpoint['accuracy'] = history['accuracy'][epoch]
+            torch.save(checkpoint, os.path.join(checkpoint_folder, f"checkpoint_epoch_{epoch+1}.pth"))
 
+    return model, history
