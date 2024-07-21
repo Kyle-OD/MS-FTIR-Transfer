@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pywt
 import ast
+from rdkit import Chem
 
 def direct_tokenization(binned_spectrum, window_size=16):
     # Pad the spectrum if necessary
@@ -115,3 +116,18 @@ def visualize_tokenization(spectrum, method, max_mz, window_size=16, path='./fig
 # Function to get a sample spectrum
 def get_sample_spectrum(df):
     return df['spectrum'].iloc[0]
+
+def character_tokenization(smiles):
+    return list(smiles)
+
+def atom_wise_tokenization(smiles):
+    mol = Chem.MolFromSmiles(smiles)
+    return [atom.GetSymbol() for atom in mol.GetAtoms()]
+
+def substructure_tokenization(smiles, max_length=10):
+    tokens = []
+    for i in range(len(smiles)):
+        for j in range(1, max_length + 1):
+            if i + j <= len(smiles):
+                tokens.append(smiles[i:i+j])
+    return list(set(tokens))
