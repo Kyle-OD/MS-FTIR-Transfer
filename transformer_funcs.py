@@ -134,12 +134,12 @@ class SpectralDataset(Dataset):
         return torch.tensor(tokenized, dtype=torch.float32).unsqueeze(0), label  # Add an extra dimension
     
 class SpectralSMILESDataset(Dataset):
-    def __init__(self, df, tokenization_method, max_mz, smiles_tokenization='character'):
+    def __init__(self, df, tokenization_method, max_mz, smiles_vocab):
         self.spectra = df['spectrum']
         self.smiles = df['SMILES']
         self.tokenization_method = tokenization_method
         self.max_mz = max_mz
-        self.smiles_tokenization = smiles_tokenization
+        self.smiles_vocab = smiles_vocab
 
     def __len__(self):
         return len(self.spectra)
@@ -149,15 +149,13 @@ class SpectralSMILESDataset(Dataset):
         smiles = self.smiles.iloc[idx]
         tokenized_spectrum = tokenize_spectrum(spectrum, self.tokenization_method, self.max_mz)
         
-        if self.smiles_tokenization == 'character':
-            tokenized_smiles = character_tokenization(smiles)
-        elif self.smiles_tokenization == 'atom_wise':
-            tokenized_smiles = atom_wise_tokenization(smiles)
-        elif self.smiles_tokenization == 'substructure':
-            tokenized_smiles = substructure_tokenization(smiles)
+        tokenized_smiles = [self.smiles_vocab['<sos>']]
+        for token in smiles:
+            tokenized_smiles.append(self.smiles_vocab.get(token, self.smiles_vocab['<unk>']))
+        tokenized_smiles.append(self.smiles_vocab['<eos>'])
         
-        return (torch.tensor(tokenized_spectrum, dtype=torch.float32).unsqueeze(0),
-                torch.tensor([self.smiles_vocab[token] for token in tokenized_smiles], dtype=torch.long))
+        return (torch.tensor(tokenized_spectrum, dtype=torch.float32).unsqueeze(0), 
+                torch.tensor(tokenized_smiles, dtype=torch.long))
 
 def load_tokenized_data(X_train, y_train, X_test, y_test, method, max_mz=None, batch_size=32):
     if max_mz is None:
@@ -177,6 +175,7 @@ def init_checkpoint_folder(base_path):
         folder_path = os.path.join(base_path, f"checkpoint_{i}")
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
+            print("Saving checkpoints to", folder_path)
             return folder_path
         i += 1
 
@@ -359,9 +358,6 @@ def train_model(model, train_loader, test_loader, optimizer, criterion, num_epoc
 def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_seq, num_epochs=50, criterion_cls=None, evaluate=True, verbose=1, checkpoint_path=None, from_checkpoint=None, meta_tag=None):
     device = next(model.parameters()).device
     history = {'seq_loss': {}, 'seq_accuracy': {}}
-    if criterion_cls:
-        history['cls_loss'] = {}
-        history['cls_accuracy'] = {}
 
     # Initialize checkpoint folder and load from checkpoint if specified
     if checkpoint_path is not None:
@@ -393,7 +389,7 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
             start_epoch = 0
         
         if not from_checkpoint:
-            save_model_meta(checkpoint_folder, model, optimizer, criterion_cls, criterion_seq, num_epochs, train_loader, test_loader, meta_tag)
+            save_seq2seq_model_meta(checkpoint_folder, model, optimizer, criterion_cls, criterion_seq, num_epochs, train_loader, test_loader, meta_tag)
     else:
         checkpoint_folder = None
         start_epoch = 0
@@ -401,79 +397,47 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
     for epoch in range(start_epoch, num_epochs):
         model.train()
         total_seq_loss = 0
-        if criterion_cls:
-            total_cls_loss = 0
         
         if verbose == 1:
             train_pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Train]', leave=False)
     
-        for (x_batch, y_cls_batch), y_seq_batch in train_loader:
+        for x_batch, y_seq_batch in train_loader:
             x_batch, y_seq_batch = x_batch.to(device), y_seq_batch.to(device)
-            if criterion_cls:
-                y_cls_batch = y_cls_batch.to(device)
             x_batch = x_batch.squeeze(1)
             
             optimizer.zero_grad()
             
-            if criterion_cls:
-                smiles_output, cls_output = model(x_batch, y_seq_batch[:, :-1])
-                cls_loss = criterion_cls(cls_output, y_cls_batch)
-            else:
-                smiles_output = model(x_batch, y_seq_batch[:, :-1])
+            smiles_output = model(x_batch, y_seq_batch[:, :-1])
             
             seq_loss = criterion_seq(smiles_output.reshape(-1, smiles_output.size(-1)), y_seq_batch[:, 1:].reshape(-1))
             
-            if criterion_cls:
-                loss = seq_loss + cls_loss
-                total_cls_loss += cls_loss.item()
-            else:
-                loss = seq_loss
-            
-            loss.backward()
+            seq_loss.backward()
             optimizer.step()
             
             total_seq_loss += seq_loss.item()
 
             if verbose == 1:
                 train_pbar.update(1)
-                if criterion_cls:
-                    train_pbar.set_postfix({'seq_loss': f'{seq_loss.item():.4f}', 'cls_loss': f'{cls_loss.item():.4f}'})
-                else:
-                    train_pbar.set_postfix({'seq_loss': f'{seq_loss.item():.4f}'})
+                train_pbar.set_postfix({'seq_loss': f'{seq_loss.item():.4f}'})
         
-        history['seq_loss'][epoch] = total_seq_loss / len(train_loader)
-        if criterion_cls:
-            history['cls_loss'][epoch] = total_cls_loss / len(train_loader)
+        avg_train_seq_loss = total_seq_loss / len(train_loader)
+        history['seq_loss'][epoch] = avg_train_seq_loss
 
         if evaluate:
             model.eval()
             seq_correct = 0
             seq_total = 0
             total_seq_loss = 0
-            if criterion_cls:
-                cls_correct = 0
-                cls_total = 0
-                total_cls_loss = 0
             
             if verbose == 1:
                 test_pbar = tqdm(test_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Test]', leave=False)
             
             with torch.no_grad():
-                for (x_batch, y_cls_batch), y_seq_batch in test_loader:
+                for x_batch, y_seq_batch in test_loader:
                     x_batch, y_seq_batch = x_batch.to(device), y_seq_batch.to(device)
-                    if criterion_cls:
-                        y_cls_batch = y_cls_batch.to(device)
                     x_batch = x_batch.squeeze(1)
                     
-                    if criterion_cls:
-                        seq_outputs, cls_outputs = model(x_batch, y_seq_batch[:, :-1])
-                        cls_loss = criterion_cls(cls_outputs, y_cls_batch)
-                        total_cls_loss += cls_loss.item()
-                        _, cls_predicted = torch.max(cls_outputs.data, 1)
-                        cls_total += y_cls_batch.size(0)
-                        cls_correct += (cls_predicted == y_cls_batch).sum().item()
-                    else:
-                        seq_outputs = model(x_batch, y_seq_batch[:, :-1])
+                    seq_outputs = model(x_batch, y_seq_batch[:, :-1])
                     
                     seq_loss = criterion_seq(seq_outputs.reshape(-1, seq_outputs.size(-1)), y_seq_batch[:, 1:].reshape(-1))
                     total_seq_loss += seq_loss.item()
@@ -484,33 +448,19 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
                     
                     if verbose == 1:
                         test_pbar.update(1)
-                        if criterion_cls:
-                            test_pbar.set_postfix({
-                                'seq_acc': f'{seq_correct/seq_total:.4f}',
-                                'cls_acc': f'{cls_correct/cls_total:.4f}'
-                            })
-                        else:
-                            test_pbar.set_postfix({
-                                'seq_acc': f'{seq_correct/seq_total:.4f}'
-                            })
+                        test_pbar.set_postfix({
+                            'seq_acc': f'{seq_correct/seq_total:.4f}'
+                        })
             
             seq_accuracy = seq_correct / seq_total
+            avg_test_seq_loss = total_seq_loss / len(test_loader)
             history['seq_accuracy'][epoch] = seq_accuracy
-            history['seq_loss'][epoch] = total_seq_loss / len(test_loader)
-            
-            if criterion_cls:
-                cls_accuracy = cls_correct / cls_total
-                history['cls_accuracy'][epoch] = cls_accuracy
-                history['cls_loss'][epoch] = total_cls_loss / len(test_loader)
             
             if verbose == 2:
                 print(f'Epoch {epoch+1}/{num_epochs}, '
-                      f'Seq Loss: {history["seq_loss"][epoch]:.4f}, '
-                      f'Seq Acc: {seq_accuracy:.4f}', end='')
-                if criterion_cls:
-                    print(f', Class Loss: {history["cls_loss"][epoch]:.4f}, '
-                          f'Class Acc: {cls_accuracy:.4f}', end='')
-                print()
+                      f'Train Loss: {avg_train_seq_loss:.4f}, '
+                      f'Test Loss: {avg_test_seq_loss:.4f}, '
+                      f'Test Acc: {seq_accuracy:.4f}')
         
         if checkpoint_folder:
             checkpoint = {
@@ -521,10 +471,6 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
             }
             if evaluate:
                 checkpoint['seq_accuracy'] = history['seq_accuracy'][epoch]
-            if criterion_cls:
-                checkpoint['cls_loss'] = history['cls_loss'][epoch]
-                if evaluate:
-                    checkpoint['cls_accuracy'] = history['cls_accuracy'][epoch]
             torch.save(checkpoint, os.path.join(checkpoint_folder, f"checkpoint_epoch_{epoch+1}.pth"))
 
     return model, history
@@ -556,7 +502,6 @@ def save_seq2seq_model_meta(folder_path, model, optimizer, criterion_cls, criter
     meta = {
         "model": {
             "name": type(model).__name__,
-            "num_classes": model.fc_classification.out_features,
             "smiles_vocab_size": model.fc_smiles.out_features,
             "embed_depth": model.embedding.in_features,
             "d_model": model.d_model,
@@ -593,10 +538,7 @@ def save_seq2seq_model_meta(folder_path, model, optimizer, criterion_cls, criter
         json.dump(meta, f, indent=4)
 
 def create_smiles_vocab(smiles_list, tokenization='character'):
-    vocab = {'<pad>': 0, '<sos>': 1, '<eos>': 2}
-    
-    if len(smiles_list) == 0:
-        return vocab  # Return basic vocabulary if list is empty
+    vocab = {'<pad>': 0, '<sos>': 1, '<eos>': 2, '<unk>': 3}
     
     unique_smiles = set(smiles_list)
     
@@ -616,12 +558,12 @@ def create_smiles_vocab(smiles_list, tokenization='character'):
     
     return vocab
 
-def load_tokenized_data_with_smiles(X_train, y_train, X_test, y_test, method, smiles_vocab, max_mz=None, batch_size=32):
+def load_tokenized_data_with_smiles(df_train, df_test, method, smiles_vocab, max_mz=None, batch_size=32):
     if max_mz is None:
-        max_mz = calculate_max_mz(X_train, 'spectrum')
+        max_mz = calculate_max_mz(df_train, 'spectrum')
     
-    train_dataset = SpectralSMILESDataset(X_train, y_train, method, max_mz, smiles_vocab)
-    test_dataset = SpectralSMILESDataset(X_test, y_test, method, max_mz, smiles_vocab)
+    train_dataset = SpectralSMILESDataset(df_train, method, max_mz, smiles_vocab)
+    test_dataset = SpectralSMILESDataset(df_test, method, max_mz, smiles_vocab)
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
@@ -629,43 +571,37 @@ def load_tokenized_data_with_smiles(X_train, y_train, X_test, y_test, method, sm
     return train_loader, test_loader
 
 def collate_fn(batch):
-    spectra, cls_labels, smiles = zip(*batch)
+    spectra, smiles = zip(*batch)
     spectra = torch.stack(spectra)
-    cls_labels = torch.tensor(cls_labels)
     
     # Pad SMILES sequences
     max_len = max(len(s) for s in smiles)
     padded_smiles = torch.zeros(len(smiles), max_len, dtype=torch.long)
     for i, s in enumerate(smiles):
-        padded_smiles[i, :len(s)] = torch.tensor(s)
+        padded_smiles[i, :len(s)] = s.clone().detach()  # Changed this line
     
-    return (spectra, cls_labels), padded_smiles
+    return spectra, padded_smiles
 
-def evaluate_model_seq2seq(model, test_loader, smiles_vocab, criterion_cls=None):
+def evaluate_model_seq2seq(model, test_loader, smiles_vocab):
     device = next(model.parameters()).device
     model.eval()
     seq_correct = 0
     seq_total = 0
-    if criterion_cls:
-        cls_correct = 0
-        cls_total = 0
+    total_seq_loss = 0
     
     inv_smiles_vocab = {v: k for k, v in smiles_vocab.items()}
     
+    criterion_seq = nn.CrossEntropyLoss(ignore_index=smiles_vocab['<pad>'])
+    
     with torch.no_grad():
-        for (x_batch, y_cls_batch), y_seq_batch in test_loader:
+        for x_batch, y_seq_batch in test_loader:
             x_batch, y_seq_batch = x_batch.to(device), y_seq_batch.to(device)
-            if criterion_cls:
-                y_cls_batch = y_cls_batch.to(device)
             x_batch = x_batch.squeeze(1)
             
-            if criterion_cls:
-                seq_outputs, cls_outputs = model(x_batch, y_seq_batch[:, :-1])
-                _, cls_predicted = torch.max(cls_outputs.data, 1)
-                cls_total += y_cls_batch.size(0)
-                cls_correct += (cls_predicted == y_cls_batch).sum().item()
-            else:
-                seq_outputs = model(x_batch, y_seq_batch[:, :-1])
+            seq_outputs = model(x_batch, y_seq_batch[:, :-1])
+            
+            seq_loss = criterion_seq(seq_outputs.reshape(-1, seq_outputs.size(-1)), y_seq_batch[:, 1:].reshape(-1))
+            total_seq_loss += seq_loss.item()
             
             _, seq_predicted = torch.max(seq_outputs.data, 2)
             seq_total += y_seq_batch[:, 1:].numel()
@@ -673,21 +609,19 @@ def evaluate_model_seq2seq(model, test_loader, smiles_vocab, criterion_cls=None)
             
             # Print some example predictions
             for i in range(min(5, x_batch.size(0))):
-                true_smiles = ''.join([inv_smiles_vocab[token.item()] for token in y_seq_batch[i] if token.item() != smiles_vocab['<pad>']])
-                pred_smiles = ''.join([inv_smiles_vocab[token.item()] for token in seq_predicted[i] if token.item() != smiles_vocab['<pad>']])
+                true_smiles = ''.join([inv_smiles_vocab[token.item()] for token in y_seq_batch[i] if token.item() not in [smiles_vocab['<pad>'], smiles_vocab['<sos>'], smiles_vocab['<eos>']]])
+                pred_smiles = ''.join([inv_smiles_vocab[token.item()] for token in seq_predicted[i] if token.item() not in [smiles_vocab['<pad>'], smiles_vocab['<sos>'], smiles_vocab['<eos>']]])
                 print(f"True SMILES: {true_smiles}")
                 print(f"Pred SMILES: {pred_smiles}")
                 print()
     
     seq_accuracy = seq_correct / seq_total
-    print(f"Sequence Accuracy: {seq_accuracy:.4f}")
+    avg_seq_loss = total_seq_loss / len(test_loader)
     
-    if criterion_cls:
-        cls_accuracy = cls_correct / cls_total
-        print(f"Classification Accuracy: {cls_accuracy:.4f}")
-        return seq_accuracy, cls_accuracy
-    else:
-        return seq_accuracy
+    print(f"Sequence Accuracy: {seq_accuracy:.4f}")
+    print(f"Average Sequence Loss: {avg_seq_loss:.4f}")
+    
+    return seq_accuracy, avg_seq_loss
     
 def save_vocab(vocab, file_path):
     with open(file_path, 'wb') as f:
