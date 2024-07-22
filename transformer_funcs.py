@@ -711,7 +711,7 @@ def get_or_create_smiles_vocabs(df, vocab_dir='./vocabs', force_create=False):
             smiles_vocabs[method] = load_vocab(vocab_path)
         else:
             print(f"Creating new {method} vocabulary...")
-            vocab = create_smiles_vocab(df['SMILES'], tokenization=method)
+            vocab = create_smiles_vocab(df['SMILES'].unique(), tokenization=method)
             save_vocab(vocab, vocab_path)
             smiles_vocabs[method] = vocab
         
