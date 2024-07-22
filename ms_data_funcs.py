@@ -131,3 +131,18 @@ def substructure_tokenization(smiles, max_length=10):
             if i + j <= len(smiles):
                 tokens.append(smiles[i:i+j])
     return list(set(tokens))
+
+def is_valid_smiles(smiles):
+    if not isinstance(smiles, str):
+        return False
+    mol = Chem.MolFromSmiles(smiles)
+    return mol is not None
+
+def remove_invalid_smiles(df):
+    # Drop rows with invalid SMILES
+    df['valid_smiles'] = df['SMILES'].apply(is_valid_smiles)
+    df = df[df['valid_smiles']]
+    df = df.drop('valid_smiles', axis=1)
+
+    print(f"Shape after dropping invalid SMILES: {df.shape}")
+    return df
