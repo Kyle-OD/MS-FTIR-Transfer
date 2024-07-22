@@ -7,6 +7,7 @@ import math
 import os
 import json
 import rdkit
+import pickle
 from datetime import datetime
 from tqdm.notebook import tqdm # swap with line below if not using jupyter notebook
 #from tqdm import tqdm
@@ -63,11 +64,12 @@ class MS_VIT(nn.Module):
         return output
 
 class MS_VIT_Seq2Seq(nn.Module):
-    def __init__(self, num_classes, smiles_vocab_size, embed_depth=16, d_model=256, nhead=8, num_layers=6, dim_feedforward=2048, dropout=0.1):
+    def __init__(self, smiles_vocab_size, embed_depth=16, d_model=256, nhead=8, num_layers=6, dim_feedforward=2048, dropout=0.1, num_classes=None):
         super().__init__()
         self.d_model = d_model
+        self.classification = num_classes is not None
         
-        # Encoder (same as before)
+        # Encoder
         self.embedding = nn.Linear(embed_depth, d_model)
         self.pos_encoder = PositionalEncoding(d_model)
         encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout)
@@ -79,8 +81,9 @@ class MS_VIT_Seq2Seq(nn.Module):
         self.transformer_decoder = nn.TransformerDecoder(decoder_layers, num_layers)
         
         # Output layers
-        self.fc_classification = nn.Linear(d_model, num_classes)
         self.fc_smiles = nn.Linear(d_model, smiles_vocab_size)
+        if self.classification:
+            self.fc_classification = nn.Linear(d_model, num_classes)
         
         self.init_weights()
 
@@ -88,27 +91,31 @@ class MS_VIT_Seq2Seq(nn.Module):
         initrange = 0.1
         self.embedding.weight.data.uniform_(-initrange, initrange)
         self.smiles_embedding.weight.data.uniform_(-initrange, initrange)
-        self.fc_classification.bias.data.zero_()
-        self.fc_classification.weight.data.uniform_(-initrange, initrange)
         self.fc_smiles.bias.data.zero_()
         self.fc_smiles.weight.data.uniform_(-initrange, initrange)
+        if self.classification:
+            self.fc_classification.bias.data.zero_()
+            self.fc_classification.weight.data.uniform_(-initrange, initrange)
 
-    def forward(self, src, tgt=None, classification=False):
+    def forward(self, src, tgt=None):
         # Encode input spectrum
         src = self.embedding(src) * math.sqrt(self.d_model)
         src = self.pos_encoder(src.transpose(0, 1))
         memory = self.transformer_encoder(src)
         
-        if classification:
+        # Decode SMILES
+        tgt = self.smiles_embedding(tgt) * math.sqrt(self.d_model)
+        tgt = self.pos_encoder(tgt.transpose(0, 1))
+        output = self.transformer_decoder(tgt, memory)
+        smiles_output = self.fc_smiles(output.transpose(0, 1))
+        
+        if self.classification:
             # Global average pooling and classification
-            output = memory.mean(dim=0)
-            return self.fc_classification(output)
+            cls_output = memory.mean(dim=0)
+            cls_output = self.fc_classification(cls_output)
+            return smiles_output, cls_output
         else:
-            # Decode SMILES
-            tgt = self.smiles_embedding(tgt) * math.sqrt(self.d_model)
-            tgt = self.pos_encoder(tgt.transpose(0, 1))
-            output = self.transformer_decoder(tgt, memory)
-            return self.fc_smiles(output.transpose(0, 1))
+            return smiles_output
 
 class SpectralDataset(Dataset):
     def __init__(self, df, labels, tokenization_method, max_mz):
@@ -349,9 +356,12 @@ def train_model(model, train_loader, test_loader, optimizer, criterion, num_epoc
 
     return model, history
 
-def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_cls, criterion_seq, num_epochs=50, evaluate=True, verbose=1, checkpoint_path=None, from_checkpoint=None, meta_tag=None):
+def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_seq, num_epochs=50, criterion_cls=None, evaluate=True, verbose=1, checkpoint_path=None, from_checkpoint=None, meta_tag=None):
     device = next(model.parameters()).device
-    history = {'cls_loss': {}, 'seq_loss': {}, 'cls_accuracy': {}, 'seq_accuracy': {}}
+    history = {'seq_loss': {}, 'seq_accuracy': {}}
+    if criterion_cls:
+        history['cls_loss'] = {}
+        history['cls_accuracy'] = {}
 
     # Initialize checkpoint folder and load from checkpoint if specified
     if checkpoint_path is not None:
@@ -390,102 +400,136 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_c
 
     for epoch in range(start_epoch, num_epochs):
         model.train()
-        total_cls_loss = 0
         total_seq_loss = 0
+        if criterion_cls:
+            total_cls_loss = 0
         
         if verbose == 1:
             train_pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Train]', leave=False)
     
         for (x_batch, y_cls_batch), y_seq_batch in train_loader:
-            x_batch, y_cls_batch, y_seq_batch = x_batch.to(device), y_cls_batch.to(device), y_seq_batch.to(device)
+            x_batch, y_seq_batch = x_batch.to(device), y_seq_batch.to(device)
+            if criterion_cls:
+                y_cls_batch = y_cls_batch.to(device)
             x_batch = x_batch.squeeze(1)
             
             optimizer.zero_grad()
             
-            # Classification
-            cls_outputs = model(x_batch, classification=True)
-            cls_loss = criterion_cls(cls_outputs, y_cls_batch)
+            if criterion_cls:
+                smiles_output, cls_output = model(x_batch, y_seq_batch[:, :-1])
+                cls_loss = criterion_cls(cls_output, y_cls_batch)
+            else:
+                smiles_output = model(x_batch, y_seq_batch[:, :-1])
             
-            # Sequence generation
-            seq_outputs = model(x_batch, y_seq_batch[:, :-1])
-            seq_loss = criterion_seq(seq_outputs.reshape(-1, seq_outputs.size(-1)), y_seq_batch[:, 1:].reshape(-1))
+            seq_loss = criterion_seq(smiles_output.reshape(-1, smiles_output.size(-1)), y_seq_batch[:, 1:].reshape(-1))
             
-            loss = cls_loss + seq_loss
+            if criterion_cls:
+                loss = seq_loss + cls_loss
+                total_cls_loss += cls_loss.item()
+            else:
+                loss = seq_loss
+            
             loss.backward()
             optimizer.step()
             
-            total_cls_loss += cls_loss.item()
             total_seq_loss += seq_loss.item()
 
             if verbose == 1:
                 train_pbar.update(1)
-                train_pbar.set_postfix({'cls_loss': f'{cls_loss.item():.4f}', 'seq_loss': f'{seq_loss.item():.4f}'})
+                if criterion_cls:
+                    train_pbar.set_postfix({'seq_loss': f'{seq_loss.item():.4f}', 'cls_loss': f'{cls_loss.item():.4f}'})
+                else:
+                    train_pbar.set_postfix({'seq_loss': f'{seq_loss.item():.4f}'})
         
-        history['cls_loss'][epoch] = total_cls_loss / len(train_loader)
         history['seq_loss'][epoch] = total_seq_loss / len(train_loader)
+        if criterion_cls:
+            history['cls_loss'][epoch] = total_cls_loss / len(train_loader)
 
         if evaluate:
             model.eval()
-            cls_correct = 0
-            cls_total = 0
             seq_correct = 0
             seq_total = 0
+            total_seq_loss = 0
+            if criterion_cls:
+                cls_correct = 0
+                cls_total = 0
+                total_cls_loss = 0
             
             if verbose == 1:
                 test_pbar = tqdm(test_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Test]', leave=False)
             
             with torch.no_grad():
                 for (x_batch, y_cls_batch), y_seq_batch in test_loader:
-                    x_batch, y_cls_batch, y_seq_batch = x_batch.to(device), y_cls_batch.to(device), y_seq_batch.to(device)
+                    x_batch, y_seq_batch = x_batch.to(device), y_seq_batch.to(device)
+                    if criterion_cls:
+                        y_cls_batch = y_cls_batch.to(device)
                     x_batch = x_batch.squeeze(1)
                     
-                    # Classification evaluation
-                    cls_outputs = model(x_batch, classification=True)
-                    _, cls_predicted = torch.max(cls_outputs.data, 1)
-                    cls_total += y_cls_batch.size(0)
-                    cls_correct += (cls_predicted == y_cls_batch).sum().item()
+                    if criterion_cls:
+                        seq_outputs, cls_outputs = model(x_batch, y_seq_batch[:, :-1])
+                        cls_loss = criterion_cls(cls_outputs, y_cls_batch)
+                        total_cls_loss += cls_loss.item()
+                        _, cls_predicted = torch.max(cls_outputs.data, 1)
+                        cls_total += y_cls_batch.size(0)
+                        cls_correct += (cls_predicted == y_cls_batch).sum().item()
+                    else:
+                        seq_outputs = model(x_batch, y_seq_batch[:, :-1])
                     
-                    # Sequence generation evaluation
-                    seq_outputs = model(x_batch, y_seq_batch[:, :-1])
+                    seq_loss = criterion_seq(seq_outputs.reshape(-1, seq_outputs.size(-1)), y_seq_batch[:, 1:].reshape(-1))
+                    total_seq_loss += seq_loss.item()
+                    
                     _, seq_predicted = torch.max(seq_outputs.data, 2)
                     seq_total += y_seq_batch[:, 1:].numel()
                     seq_correct += (seq_predicted == y_seq_batch[:, 1:]).sum().item()
                     
                     if verbose == 1:
                         test_pbar.update(1)
-                        test_pbar.set_postfix({
-                            'cls_acc': f'{cls_correct/cls_total:.4f}',
-                            'seq_acc': f'{seq_correct/seq_total:.4f}'
-                        })
+                        if criterion_cls:
+                            test_pbar.set_postfix({
+                                'seq_acc': f'{seq_correct/seq_total:.4f}',
+                                'cls_acc': f'{cls_correct/cls_total:.4f}'
+                            })
+                        else:
+                            test_pbar.set_postfix({
+                                'seq_acc': f'{seq_correct/seq_total:.4f}'
+                            })
             
-            cls_accuracy = cls_correct / cls_total
             seq_accuracy = seq_correct / seq_total
-            history['cls_accuracy'][epoch] = cls_accuracy
             history['seq_accuracy'][epoch] = seq_accuracy
+            history['seq_loss'][epoch] = total_seq_loss / len(test_loader)
+            
+            if criterion_cls:
+                cls_accuracy = cls_correct / cls_total
+                history['cls_accuracy'][epoch] = cls_accuracy
+                history['cls_loss'][epoch] = total_cls_loss / len(test_loader)
             
             if verbose == 2:
                 print(f'Epoch {epoch+1}/{num_epochs}, '
-                      f'Class Loss: {history["cls_loss"][epoch]:.4f}, '
                       f'Seq Loss: {history["seq_loss"][epoch]:.4f}, '
-                      f'Class Acc: {cls_accuracy:.4f}, '
-                      f'Seq Acc: {seq_accuracy:.4f}')
+                      f'Seq Acc: {seq_accuracy:.4f}', end='')
+                if criterion_cls:
+                    print(f', Class Loss: {history["cls_loss"][epoch]:.4f}, '
+                          f'Class Acc: {cls_accuracy:.4f}', end='')
+                print()
         
         if checkpoint_folder:
             checkpoint = {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'cls_loss': history['cls_loss'][epoch],
                 'seq_loss': history['seq_loss'][epoch],
             }
             if evaluate:
-                checkpoint['cls_accuracy'] = history['cls_accuracy'][epoch]
                 checkpoint['seq_accuracy'] = history['seq_accuracy'][epoch]
+            if criterion_cls:
+                checkpoint['cls_loss'] = history['cls_loss'][epoch]
+                if evaluate:
+                    checkpoint['cls_accuracy'] = history['cls_accuracy'][epoch]
             torch.save(checkpoint, os.path.join(checkpoint_folder, f"checkpoint_epoch_{epoch+1}.pth"))
 
     return model, history
-'''
-def load_model_from_meta(meta_path):
+
+def load_seq2seq_from_meta(meta_path):
     with open(meta_path, 'r') as f:
         meta = json.load(f)
     
@@ -508,7 +552,7 @@ def load_model_from_meta(meta_path):
     
     return model, optimizer, criterion_cls, criterion_seq, meta['training']['num_epochs']
 
-def save_model_meta(folder_path, model, optimizer, criterion_cls, criterion_seq, num_epochs, train_loader, test_loader, meta_tag):
+def save_seq2seq_model_meta(folder_path, model, optimizer, criterion_cls, criterion_seq, num_epochs, train_loader, test_loader, meta_tag):
     meta = {
         "model": {
             "name": type(model).__name__,
@@ -551,7 +595,12 @@ def save_model_meta(folder_path, model, optimizer, criterion_cls, criterion_seq,
 def create_smiles_vocab(smiles_list, tokenization='character'):
     vocab = {'<pad>': 0, '<sos>': 1, '<eos>': 2}
     
-    for smiles in smiles_list:
+    if len(smiles_list) == 0:
+        return vocab  # Return basic vocabulary if list is empty
+    
+    unique_smiles = set(smiles_list)
+    
+    for smiles in unique_smiles:
         if tokenization == 'character':
             tokens = character_tokenization(smiles)
         elif tokenization == 'atom_wise':
@@ -592,29 +641,32 @@ def collate_fn(batch):
     
     return (spectra, cls_labels), padded_smiles
 
-def evaluate_model_seq2seq(model, test_loader, smiles_vocab):
+def evaluate_model_seq2seq(model, test_loader, smiles_vocab, criterion_cls=None):
     device = next(model.parameters()).device
     model.eval()
-    cls_correct = 0
-    cls_total = 0
     seq_correct = 0
     seq_total = 0
+    if criterion_cls:
+        cls_correct = 0
+        cls_total = 0
     
     inv_smiles_vocab = {v: k for k, v in smiles_vocab.items()}
     
     with torch.no_grad():
         for (x_batch, y_cls_batch), y_seq_batch in test_loader:
-            x_batch, y_cls_batch, y_seq_batch = x_batch.to(device), y_cls_batch.to(device), y_seq_batch.to(device)
+            x_batch, y_seq_batch = x_batch.to(device), y_seq_batch.to(device)
+            if criterion_cls:
+                y_cls_batch = y_cls_batch.to(device)
             x_batch = x_batch.squeeze(1)
             
-            # Classification evaluation
-            cls_outputs = model(x_batch, classification=True)
-            _, cls_predicted = torch.max(cls_outputs.data, 1)
-            cls_total += y_cls_batch.size(0)
-            cls_correct += (cls_predicted == y_cls_batch).sum().item()
+            if criterion_cls:
+                seq_outputs, cls_outputs = model(x_batch, y_seq_batch[:, :-1])
+                _, cls_predicted = torch.max(cls_outputs.data, 1)
+                cls_total += y_cls_batch.size(0)
+                cls_correct += (cls_predicted == y_cls_batch).sum().item()
+            else:
+                seq_outputs = model(x_batch, y_seq_batch[:, :-1])
             
-            # Sequence generation evaluation
-            seq_outputs = model(x_batch, y_seq_batch[:, :-1])
             _, seq_predicted = torch.max(seq_outputs.data, 2)
             seq_total += y_seq_batch[:, 1:].numel()
             seq_correct += (seq_predicted == y_seq_batch[:, 1:]).sum().item()
@@ -627,11 +679,42 @@ def evaluate_model_seq2seq(model, test_loader, smiles_vocab):
                 print(f"Pred SMILES: {pred_smiles}")
                 print()
     
-    cls_accuracy = cls_correct / cls_total
     seq_accuracy = seq_correct / seq_total
-    
-    print(f"Classification Accuracy: {cls_accuracy:.4f}")
     print(f"Sequence Accuracy: {seq_accuracy:.4f}")
     
-    return cls_accuracy, seq_accuracy
-'''
+    if criterion_cls:
+        cls_accuracy = cls_correct / cls_total
+        print(f"Classification Accuracy: {cls_accuracy:.4f}")
+        return seq_accuracy, cls_accuracy
+    else:
+        return seq_accuracy
+    
+def save_vocab(vocab, file_path):
+    with open(file_path, 'wb') as f:
+        pickle.dump(vocab, f)
+
+def load_vocab(file_path):
+    with open(file_path, 'rb') as f:
+        return pickle.load(f)
+
+def get_or_create_smiles_vocabs(df, vocab_dir='./vocabs', force_create=False):
+    os.makedirs(vocab_dir, exist_ok=True)
+    
+    smiles_vocabs = {}
+    tokenization_methods = ['character', 'atom_wise', 'substructure']
+    
+    for method in tokenization_methods:
+        vocab_path = os.path.join(vocab_dir, f'smiles_vocab_{method}.pkl')
+        
+        if os.path.exists(vocab_path) and not force_create:
+            print(f"Loading existing {method} vocabulary...")
+            smiles_vocabs[method] = load_vocab(vocab_path)
+        else:
+            print(f"Creating new {method} vocabulary...")
+            vocab = create_smiles_vocab(df['SMILES'], tokenization=method)
+            save_vocab(vocab, vocab_path)
+            smiles_vocabs[method] = vocab
+        
+        print(f"SMILES vocabulary size ({method}): {len(smiles_vocabs[method])}")
+    
+    return smiles_vocabs
