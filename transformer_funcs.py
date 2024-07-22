@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import optim, nn
 from torch.utils.data import TensorDataset, DataLoader, Dataset
+from torch.utils.tensorboard import SummaryWriter
 import math
 import os
 import json
@@ -355,9 +356,15 @@ def train_model(model, train_loader, test_loader, optimizer, criterion, num_epoc
 
     return model, history
 
-def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_seq, num_epochs=50, criterion_cls=None, evaluate=True, verbose=1, checkpoint_path=None, from_checkpoint=None, meta_tag=None):
+def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_seq, num_epochs=50, criterion_cls=None, evaluate=True, verbose=1, checkpoint_path=None, from_checkpoint=None, meta_tag=None, use_tensorboard=False):
     device = next(model.parameters()).device
     history = {'seq_loss': {}, 'seq_accuracy': {}}
+
+    # TensorBoard setup
+    if use_tensorboard:
+        tb_log_dir = os.path.join('runs', datetime.now().strftime('%Y%m%d-%H%M%S'))
+        writer = SummaryWriter(log_dir=tb_log_dir)
+        print(f"TensorBoard logs will be saved to {tb_log_dir}")
 
     # Initialize checkpoint folder and load from checkpoint if specified
     if checkpoint_path is not None:
@@ -423,6 +430,10 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
         avg_train_seq_loss = total_seq_loss / len(train_loader)
         history['seq_loss'][epoch] = avg_train_seq_loss
 
+        # Log training loss to TensorBoard
+        if use_tensorboard:
+            writer.add_scalar('Loss/train', avg_train_seq_loss, epoch)
+
         if evaluate:
             model.eval()
             seq_correct = 0
@@ -455,6 +466,11 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
             seq_accuracy = seq_correct / seq_total
             avg_test_seq_loss = total_seq_loss / len(test_loader)
             history['seq_accuracy'][epoch] = seq_accuracy
+
+            # Log evaluation metrics to TensorBoard
+            if use_tensorboard:
+                writer.add_scalar('Loss/test', avg_test_seq_loss, epoch)
+                writer.add_scalar('Accuracy/test', seq_accuracy, epoch)
             
             if verbose == 2:
                 print(f'Epoch {epoch+1}/{num_epochs}, '
@@ -472,6 +488,10 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
             if evaluate:
                 checkpoint['seq_accuracy'] = history['seq_accuracy'][epoch]
             torch.save(checkpoint, os.path.join(checkpoint_folder, f"checkpoint_epoch_{epoch+1}.pth"))
+
+    # Close the TensorBoard writer
+    if use_tensorboard:
+        writer.close()
 
     return model, history
 
