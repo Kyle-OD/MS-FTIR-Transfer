@@ -6,10 +6,14 @@ from torch.utils.data import TensorDataset, DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 import math
 import os
+import re
 import json
 import rdkit
 import pickle
 from datetime import datetime
+from rdkit import Chem, DataStructs
+from rdkit.Chem import AllChem
+import Levenshtein
 from tqdm.notebook import tqdm # swap with line below if not using jupyter notebook
 #from tqdm import tqdm
 from ms_data_funcs import *
@@ -358,7 +362,14 @@ def train_model(model, train_loader, test_loader, optimizer, criterion, num_epoc
 
 def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_seq, num_epochs=50, criterion_cls=None, evaluate=True, verbose=1, checkpoint_path=None, from_checkpoint=None, meta_tag=None, use_tensorboard=False):
     device = next(model.parameters()).device
-    history = {'seq_loss': {}, 'seq_accuracy': {}}
+    history = {
+        'train_loss': {},
+        'test_accuracy': {},
+        'test_loss': {},
+        'valid_smiles_percentage': {},
+        'tanimoto_similarity': {},
+        'avg_edit_distance': {}
+    }
 
     # TensorBoard setup
     if use_tensorboard:
@@ -425,68 +436,45 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
 
             if verbose == 1:
                 train_pbar.update(1)
-                train_pbar.set_postfix({'seq_loss': f'{seq_loss.item():.4f}'})
+                train_pbar.set_postfix({'train_loss': f'{seq_loss.item():.4f}'})
         
         avg_train_seq_loss = total_seq_loss / len(train_loader)
-        history['seq_loss'][epoch] = avg_train_seq_loss
+        history['train_loss'][epoch] = avg_train_seq_loss
 
         # Log training loss to TensorBoard
         if use_tensorboard:
             writer.add_scalar('Loss/train', avg_train_seq_loss, epoch)
 
         if evaluate:
-            model.eval()
-            seq_correct = 0
-            seq_total = 0
-            total_seq_loss = 0
+            '''if verbose == 1:
+                print(f'Epoch {epoch+1}/{num_epochs} [Eval]')'''
+            eval_results = evaluate_model_seq2seq(model, test_loader, train_loader.dataset.smiles_vocab, verbose=verbose)
             
-            if verbose == 1:
-                test_pbar = tqdm(test_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Test]', leave=False)
-            
-            with torch.no_grad():
-                for x_batch, y_seq_batch in test_loader:
-                    x_batch, y_seq_batch = x_batch.to(device), y_seq_batch.to(device)
-                    x_batch = x_batch.squeeze(1)
-                    
-                    seq_outputs = model(x_batch, y_seq_batch[:, :-1])
-                    
-                    seq_loss = criterion_seq(seq_outputs.reshape(-1, seq_outputs.size(-1)), y_seq_batch[:, 1:].reshape(-1))
-                    total_seq_loss += seq_loss.item()
-                    
-                    _, seq_predicted = torch.max(seq_outputs.data, 2)
-                    seq_total += y_seq_batch[:, 1:].numel()
-                    seq_correct += (seq_predicted == y_seq_batch[:, 1:]).sum().item()
-                    
-                    if verbose == 1:
-                        test_pbar.update(1)
-                        test_pbar.set_postfix({
-                            'seq_acc': f'{seq_correct/seq_total:.4f}'
-                        })
-            
-            seq_accuracy = seq_correct / seq_total
-            avg_test_seq_loss = total_seq_loss / len(test_loader)
-            history['seq_accuracy'][epoch] = seq_accuracy
+            for metric, value in eval_results.items():
+                history[metric][epoch] = value
 
-            # Log evaluation metrics to TensorBoard
             if use_tensorboard:
-                writer.add_scalar('Loss/test', avg_test_seq_loss, epoch)
-                writer.add_scalar('Accuracy/test', seq_accuracy, epoch)
+                for metric, value in eval_results.items():
+                    writer.add_scalar(f'{metric}/test', value, epoch)
             
             if verbose == 2:
                 print(f'Epoch {epoch+1}/{num_epochs}, '
                       f'Train Loss: {avg_train_seq_loss:.4f}, '
-                      f'Test Loss: {avg_test_seq_loss:.4f}, '
-                      f'Test Acc: {seq_accuracy:.4f}')
+                      f'Test Loss: {eval_results["mean_test_loss"]:.4f}, '
+                      f'Test Acc: {eval_results["test_accuracy"]:.4f}, '
+                      f'Valid SMILES: {eval_results["valid_smiles_percentage"]:.2f}%, '
+                      f'Tanimoto Sim: {eval_results["tanimoto_similarity"]:.4f}, '
+                      f'Edit Dist: {eval_results["avg_edit_distance"]:.2f}')
         
         if checkpoint_folder:
             checkpoint = {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'seq_loss': history['seq_loss'][epoch],
+                'train_loss': history['train_loss'][epoch],
             }
             if evaluate:
-                checkpoint['seq_accuracy'] = history['seq_accuracy'][epoch]
+                checkpoint['test_loss'] = history['test_loss'][epoch]
             torch.save(checkpoint, os.path.join(checkpoint_folder, f"checkpoint_epoch_{epoch+1}.pth"))
 
     # Close the TensorBoard writer
@@ -602,7 +590,7 @@ def collate_fn(batch):
     
     return spectra, padded_smiles
 
-def evaluate_model_seq2seq(model, test_loader, smiles_vocab):
+def evaluate_model_seq2seq(model, test_loader, smiles_vocab, verbose=0, test=False):
     device = next(model.parameters()).device
     model.eval()
     seq_correct = 0
@@ -612,6 +600,12 @@ def evaluate_model_seq2seq(model, test_loader, smiles_vocab):
     inv_smiles_vocab = {v: k for k, v in smiles_vocab.items()}
     
     criterion_seq = nn.CrossEntropyLoss(ignore_index=smiles_vocab['<pad>'])
+    
+    all_true_smiles = []
+    all_pred_smiles = []
+
+    if verbose == 1:
+        pbar = tqdm(test_loader, desc='Evaluating', leave=False)
     
     with torch.no_grad():
         for x_batch, y_seq_batch in test_loader:
@@ -627,21 +621,44 @@ def evaluate_model_seq2seq(model, test_loader, smiles_vocab):
             seq_total += y_seq_batch[:, 1:].numel()
             seq_correct += (seq_predicted == y_seq_batch[:, 1:]).sum().item()
             
-            # Print some example predictions
-            for i in range(min(5, x_batch.size(0))):
+            for i in range(x_batch.size(0)):
                 true_smiles = ''.join([inv_smiles_vocab[token.item()] for token in y_seq_batch[i] if token.item() not in [smiles_vocab['<pad>'], smiles_vocab['<sos>'], smiles_vocab['<eos>']]])
                 pred_smiles = ''.join([inv_smiles_vocab[token.item()] for token in seq_predicted[i] if token.item() not in [smiles_vocab['<pad>'], smiles_vocab['<sos>'], smiles_vocab['<eos>']]])
-                print(f"True SMILES: {true_smiles}")
-                print(f"Pred SMILES: {pred_smiles}")
-                print()
+                all_true_smiles.append(true_smiles)
+                all_pred_smiles.append(pred_smiles)
+
+            if verbose == 1:
+                pbar.update(1)
+                pbar.set_postfix({'Loss': f'{seq_loss.item():.4f}'})
     
     seq_accuracy = seq_correct / seq_total
     avg_seq_loss = total_seq_loss / len(test_loader)
     
-    print(f"Sequence Accuracy: {seq_accuracy:.4f}")
-    print(f"Average Sequence Loss: {avg_seq_loss:.4f}")
+    valid_smiles_percentage = calculate_valid_smiles_percentage(all_pred_smiles)
+    tanimoto_similarity = calculate_tanimoto_similarity(all_true_smiles, all_pred_smiles)
+    avg_edit_distance = calculate_average_edit_distance(all_true_smiles, all_pred_smiles)
     
-    return seq_accuracy, avg_seq_loss
+    if test:
+        print(f"Sequence Accuracy: {seq_accuracy:.4f}")
+        print(f"Average Sequence Loss: {avg_seq_loss:.4f}")
+        print(f"Valid SMILES Percentage: {valid_smiles_percentage:.2f}%")
+        print(f"Average Tanimoto Similarity: {tanimoto_similarity:.4f}")
+        print(f"Average Edit Distance: {avg_edit_distance:.2f}")
+        # Print some example predictions
+        for i in range(min(5, x_batch.size(0))):
+            true_smiles = ''.join([inv_smiles_vocab[token.item()] for token in y_seq_batch[i] if token.item() not in [smiles_vocab['<pad>'], smiles_vocab['<sos>'], smiles_vocab['<eos>']]])
+            pred_smiles = ''.join([inv_smiles_vocab[token.item()] for token in seq_predicted[i] if token.item() not in [smiles_vocab['<pad>'], smiles_vocab['<sos>'], smiles_vocab['<eos>']]])
+            print(f"True SMILES: {true_smiles}")
+            print(f"Pred SMILES: {pred_smiles}")
+            print()
+    
+    return {
+        'test_accuracy': seq_accuracy,
+        'test_loss': avg_seq_loss,
+        'valid_smiles_percentage': valid_smiles_percentage,
+        'tanimoto_similarity': tanimoto_similarity,
+        'avg_edit_distance': avg_edit_distance
+    }
     
 def save_vocab(vocab, file_path):
     with open(file_path, 'wb') as f:
@@ -672,3 +689,61 @@ def get_or_create_smiles_vocabs(df, vocab_dir='./vocabs', force_create=False):
         print(f"SMILES vocabulary size ({method}): {len(smiles_vocabs[method])}")
     
     return smiles_vocabs
+
+def fast_valid_smiles(smiles):
+    # This regex pattern checks for some basic SMILES syntax rules
+    pattern = r'^([^J][a-z0-9@+\-\[\]\(\)\\\/%=#$]{6,})$'
+    return bool(re.match(pattern, smiles))
+
+def calculate_valid_smiles_percentage(predicted_smiles):
+    valid_count = sum(fast_valid_smiles(smiles) for smiles in predicted_smiles)
+    return valid_count / len(predicted_smiles) * 100
+
+def calculate_tanimoto_similarity(true_smiles, pred_smiles):
+    valid_pairs = [(t, p) for t, p in zip(true_smiles, pred_smiles) if fast_valid_smiles(p)]
+    if not valid_pairs:
+        return 0.0
+    
+    true_mols = [Chem.MolFromSmiles(t) for t, _ in valid_pairs]
+    pred_mols = [Chem.MolFromSmiles(p) for _, p in valid_pairs]
+    
+    true_fps = [AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=1024) for mol in true_mols if mol is not None]
+    pred_fps = [AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=1024) for mol in pred_mols if mol is not None]
+    
+    similarities = [DataStructs.TanimotoSimilarity(t_fp, p_fp) for t_fp, p_fp in zip(true_fps, pred_fps)]
+    return sum(similarities) / len(similarities) if similarities else 0.0
+
+def calculate_average_edit_distance(true_smiles, pred_smiles):
+    distances = [Levenshtein.distance(t, p) for t, p in zip(true_smiles, pred_smiles)]
+    return sum(distances) / len(distances)
+
+def plot_training_history(history):
+    metrics = ['train_loss', 'test_loss', 'test_accuracy', 'valid_smiles_percentage', 'tanimoto_similarity', 'avg_edit_distance']
+    fig, axes = plt.subplots(3, 2, figsize=(12, 12))
+    fig.suptitle('Training History', fontsize=16)
+
+    for idx, metric in enumerate(metrics):
+        row = idx % 3
+        col = idx // 3
+        ax = axes[row, col]
+        
+        values = list(history[metric].values())
+        epochs = list(history[metric].keys())
+        
+        ax.plot(epochs, values)
+        ax.set_title(metric.replace('_', ' ').title())
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Value')
+        
+        # Add grid for better readability
+        ax.grid(True, linestyle='--', alpha=0.7)
+        
+        # Improve y-axis scale
+        if metric in ['test_accuracy', 'valid_smiles_percentage', 'tanimoto_similarity']:
+            ax.set_ylim(0, 1)
+        elif metric == 'avg_edit_distance':
+            ax.set_ylim(bottom=0)  # Start from 0, but let the upper limit be determined automatically
+
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.93)  # Adjust for the suptitle
+    plt.show()
