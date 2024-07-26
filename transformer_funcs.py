@@ -11,12 +11,15 @@ import json
 import rdkit
 import pickle
 from datetime import datetime
-from rdkit import Chem, DataStructs
-from rdkit.Chem import AllChem
+from rdkit import Chem, DataStructs, RDLogger
+from rdkit.Chem import AllChem, rdMolDescriptors
 import Levenshtein
 from tqdm.notebook import tqdm # swap with line below if not using jupyter notebook
 #from tqdm import tqdm
 from ms_data_funcs import *
+
+# Suppress RDKit warnings
+RDLogger.DisableLog('rdApp.*')
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
@@ -368,6 +371,7 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
         'test_loss': {},
         'valid_smiles_percentage': {},
         'tanimoto_similarity': {},
+        'dice_similarity': {},
         'avg_edit_distance': {}
     }
 
@@ -387,6 +391,12 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
                 if os.path.exists(meta_file):
                     model, optimizer, criterion_cls, criterion_seq, num_epochs = load_model_from_meta(meta_file)
                     model = model.to(device)
+                
+                # Load history
+                    history_file = os.path.join(checkpoint_folder, "training_history.json")
+                    if os.path.exists(history_file):
+                        with open(history_file, 'r') as f:
+                            history = json.load(f)
                 
                 checkpoint_files = [f for f in os.listdir(checkpoint_folder) if f.endswith('.pth')]
                 if checkpoint_files:
@@ -443,7 +453,7 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
 
         # Log training loss to TensorBoard
         if use_tensorboard:
-            writer.add_scalar('Loss/train', avg_train_seq_loss, epoch)
+            writer.add_scalar('train_loss', avg_train_seq_loss, epoch)
 
         if evaluate:
             '''if verbose == 1:
@@ -452,10 +462,8 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
             
             for metric, value in eval_results.items():
                 history[metric][epoch] = value
-
-            if use_tensorboard:
-                for metric, value in eval_results.items():
-                    writer.add_scalar(f'{metric}/test', value, epoch)
+                if use_tensorboard:
+                    writer.add_scalar(f'{metric}', value, epoch)
             
             if verbose == 2:
                 print(f'Epoch {epoch+1}/{num_epochs}, '
@@ -464,6 +472,7 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
                       f'Test Acc: {eval_results["test_accuracy"]:.4f}, '
                       f'Valid SMILES: {eval_results["valid_smiles_percentage"]:.2f}%, '
                       f'Tanimoto Sim: {eval_results["tanimoto_similarity"]:.4f}, '
+                      f'Dice Sim: {eval_results["dice_similarity"]:.4f}, '
                       f'Edit Dist: {eval_results["avg_edit_distance"]:.2f}')
         
         if checkpoint_folder:
@@ -477,6 +486,10 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
                 checkpoint['test_loss'] = history['test_loss'][epoch]
             torch.save(checkpoint, os.path.join(checkpoint_folder, f"checkpoint_epoch_{epoch+1}.pth"))
 
+            # Save training history
+            history_file = os.path.join(checkpoint_folder, "training_history.json")
+            with open(history_file, 'w') as f:
+                json.dump(history, f, indent=4)
     # Close the TensorBoard writer
     if use_tensorboard:
         writer.close()
@@ -636,14 +649,16 @@ def evaluate_model_seq2seq(model, test_loader, smiles_vocab, verbose=0, test=Fal
     
     valid_smiles_percentage = calculate_valid_smiles_percentage(all_pred_smiles)
     tanimoto_similarity = calculate_tanimoto_similarity(all_true_smiles, all_pred_smiles)
+    dice_similarity = calculate_dice_similarity(all_true_smiles, all_pred_smiles)
     avg_edit_distance = calculate_average_edit_distance(all_true_smiles, all_pred_smiles)
     
     if test:
         print(f"Sequence Accuracy: {seq_accuracy:.4f}")
         print(f"Average Sequence Loss: {avg_seq_loss:.4f}")
-        print(f"Valid SMILES Percentage: {valid_smiles_percentage:.2f}%")
+        print(f"Valid SMILES Percentage: {(100.0 * valid_smiles_percentage):.2f}%")
         print(f"Average Tanimoto Similarity: {tanimoto_similarity:.4f}")
-        print(f"Average Edit Distance: {avg_edit_distance:.2f}")
+        print(f"Average Dice Similarity: {dice_similarity:.4f}")
+        print(f"Average Edit Distance: {avg_edit_distance:.2f}\n")
         # Print some example predictions
         for i in range(min(5, x_batch.size(0))):
             true_smiles = ''.join([inv_smiles_vocab[token.item()] for token in y_seq_batch[i] if token.item() not in [smiles_vocab['<pad>'], smiles_vocab['<sos>'], smiles_vocab['<eos>']]])
@@ -657,6 +672,7 @@ def evaluate_model_seq2seq(model, test_loader, smiles_vocab, verbose=0, test=Fal
         'test_loss': avg_seq_loss,
         'valid_smiles_percentage': valid_smiles_percentage,
         'tanimoto_similarity': tanimoto_similarity,
+        'dice_similarity': dice_similarity,
         'avg_edit_distance': avg_edit_distance
     }
     
@@ -690,27 +706,75 @@ def get_or_create_smiles_vocabs(df, vocab_dir='./vocabs', force_create=False):
     
     return smiles_vocabs
 
-def fast_valid_smiles(smiles):
-    # This regex pattern checks for some basic SMILES syntax rules
-    pattern = r'^([^J][a-z0-9@+\-\[\]\(\)\\\/%=#$]{6,})$'
-    return bool(re.match(pattern, smiles))
+def is_valid_smiles(smiles):
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        return mol is not None
+    except:
+        return False
 
 def calculate_valid_smiles_percentage(predicted_smiles):
-    valid_count = sum(fast_valid_smiles(smiles) for smiles in predicted_smiles)
-    return valid_count / len(predicted_smiles) * 100
+    valid_count = 0
+    for smiles in predicted_smiles:
+        if is_valid_smiles(smiles):
+            try:
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is not None:
+                    valid_count += 1
+            except:
+                pass  # Ignore RDKit errors
+    return (valid_count / len(predicted_smiles))
 
 def calculate_tanimoto_similarity(true_smiles, pred_smiles):
-    valid_pairs = [(t, p) for t, p in zip(true_smiles, pred_smiles) if fast_valid_smiles(p)]
-    if not valid_pairs:
+    if len(true_smiles) != len(pred_smiles):
         return 0.0
-    
-    true_mols = [Chem.MolFromSmiles(t) for t, _ in valid_pairs]
-    pred_mols = [Chem.MolFromSmiles(p) for _, p in valid_pairs]
-    
-    true_fps = [AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=1024) for mol in true_mols if mol is not None]
-    pred_fps = [AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=1024) for mol in pred_mols if mol is not None]
-    
-    similarities = [DataStructs.TanimotoSimilarity(t_fp, p_fp) for t_fp, p_fp in zip(true_fps, pred_fps)]
+
+    similarities = []
+    for t, p in zip(true_smiles, pred_smiles):
+        try:
+            t_mol = Chem.MolFromSmiles(t)
+            p_mol = Chem.MolFromSmiles(p)
+            
+            if t_mol is None:
+                continue
+            
+            if p_mol is None:
+                continue
+            
+            t_fp = AllChem.GetMorganFingerprintAsBitVect(t_mol, 2, nBits=2048)
+            p_fp = AllChem.GetMorganFingerprintAsBitVect(p_mol, 2, nBits=2048)
+            similarity = DataStructs.TanimotoSimilarity(t_fp, p_fp)
+            similarities.append(similarity)
+        except Exception as e:
+            #print(f"Error processing SMILES pair: ({t}, {p}). Error: {str(e)}")
+            continue
+
+    return sum(similarities) / len(similarities) if similarities else 0.0
+
+def calculate_dice_similarity(true_smiles, pred_smiles):
+    if len(true_smiles) != len(pred_smiles):
+        return 0.0
+
+    similarities = []
+    for t, p in zip(true_smiles, pred_smiles):
+        try:
+            t_mol = Chem.MolFromSmiles(t)
+            p_mol = Chem.MolFromSmiles(p)
+            
+            if t_mol is None:
+                continue
+            
+            if p_mol is None:
+                continue
+            
+            t_fp = AllChem.GetMorganFingerprintAsBitVect(t_mol, 2, nBits=2048)
+            p_fp = AllChem.GetMorganFingerprintAsBitVect(p_mol, 2, nBits=2048)
+            similarity = DataStructs.DiceSimilarity(t_fp, p_fp)
+            similarities.append(similarity)
+        except Exception as e:
+            #print(f"Error processing SMILES pair: ({t}, {p}). Error: {str(e)}")
+            continue
+
     return sum(similarities) / len(similarities) if similarities else 0.0
 
 def calculate_average_edit_distance(true_smiles, pred_smiles):
@@ -718,13 +782,13 @@ def calculate_average_edit_distance(true_smiles, pred_smiles):
     return sum(distances) / len(distances)
 
 def plot_training_history(history):
-    metrics = ['train_loss', 'test_loss', 'test_accuracy', 'valid_smiles_percentage', 'tanimoto_similarity', 'avg_edit_distance']
-    fig, axes = plt.subplots(3, 2, figsize=(12, 12))
+    metrics = ['train_loss', 'test_loss', 'test_accuracy', 'valid_smiles_percentage', 'tanimoto_similarity', 'dice_similarity', 'avg_edit_distance']
+    fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(15, 20))
     fig.suptitle('Training History', fontsize=16)
 
     for idx, metric in enumerate(metrics):
-        row = idx % 3
-        col = idx // 3
+        row = idx // 2
+        col = idx % 2
         ax = axes[row, col]
         
         values = list(history[metric].values())
@@ -738,12 +802,15 @@ def plot_training_history(history):
         # Add grid for better readability
         ax.grid(True, linestyle='--', alpha=0.7)
         
-        # Improve y-axis scale
-        if metric in ['test_accuracy', 'valid_smiles_percentage', 'tanimoto_similarity']:
+        # Fix y-axis scale
+        if metric in ['test_accuracy', 'valid_smiles_percentage', 'tanimoto_similarity', 'dice_similarity']:
             ax.set_ylim(0, 1)
         elif metric == 'avg_edit_distance':
             ax.set_ylim(bottom=0)  # Start from 0, but let the upper limit be determined automatically
 
+    # Remove the last empty subplot
+    fig.delaxes(axes[3][1])
+
     plt.tight_layout()
-    plt.subplots_adjust(top=0.93)  # Adjust for the suptitle
+    plt.subplots_adjust(top=0.95)  # Adjust for the suptitle
     plt.show()
