@@ -22,6 +22,12 @@ from ms_data_funcs import *
 RDLogger.DisableLog('rdApp.*')
 
 class PositionalEncoding(nn.Module):
+    '''pytorch module for generating positional encoding values
+
+    Args:
+        d_model: dimensionality of the internal states of the model
+        max_len: maximum number of tokens in context
+    '''
     def __init__(self, d_model, max_len=5000):
         super().__init__()
         position = torch.arange(max_len).unsqueeze(1)
@@ -35,6 +41,17 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:x.size(0)]
     
 class MS_VIT(nn.Module):
+    '''pytorch module classifying from mass spectral input
+
+    Args:
+        num_classes: number of classes present in classification set
+        embed_depth: token depth
+        d_model: dimensionality of the internal states of the model
+        n_head: number of attention heads
+        num_layers: number of transformer encoder layers
+        dim_feedforward: dimensionality of feedforward classifier network
+        dropout: dropout percentage applied to entire model
+    '''
     def __init__(self, num_classes, embed_depth=16, d_model=256, nhead=8, num_layers=6, dim_feedforward=2048, dropout=0.1):
         super().__init__()
         self.d_model = d_model
@@ -72,6 +89,18 @@ class MS_VIT(nn.Module):
         return output
 
 class MS_VIT_Seq2Seq(nn.Module):
+    '''pytorch module predicting sequence (usually SMILES) from from mass spectral input
+
+    Args:
+        smiles_vocab_size: size of vocabulary of SMILES encoding method 
+        embed_depth: token depth
+        d_model: dimensionality of the internal states of the model
+        n_head: number of attention heads
+        num_layers: number of transformer encoder layers
+        dim_feedforward: dimensionality of feedforward classifier network
+        dropout: dropout percentage applied to entire model
+        num_classes: number of classes present in classification set
+    '''
     def __init__(self, smiles_vocab_size, embed_depth=16, d_model=256, nhead=8, num_layers=6, dim_feedforward=2048, dropout=0.1, num_classes=None):
         super().__init__()
         self.d_model = d_model
@@ -126,6 +155,14 @@ class MS_VIT_Seq2Seq(nn.Module):
             return smiles_output
 
 class SpectralDataset(Dataset):
+    '''pytorch dataset for loading mass spectrum data with class labels
+
+    Args:
+        df: pandas DataFrame to extract from
+        labels: class labels
+        tokenization_method: method used to tokenize ms spectrum data
+        max_mz: the largest m/z value present in the dataset
+    '''
     def __init__(self, df, labels, tokenization_method, max_mz):
         self.spectra = df['spectrum']
         self.labels = labels
@@ -142,6 +179,14 @@ class SpectralDataset(Dataset):
         return torch.tensor(tokenized, dtype=torch.float32).unsqueeze(0), label  # Add an extra dimension
     
 class SpectralSMILESDataset(Dataset):
+    '''pytorch dataset for loading mass spectrum data with tokenized SMILES 
+
+    Args:
+        df: pandas DataFrame to extract from
+        tokenization_method: method used to tokenize ms spectrum data
+        max_mz: the largest m/z value present in the dataset
+        smiles_vocab: vocab used with SMILES tokenization method
+    '''
     def __init__(self, df, tokenization_method, max_mz, smiles_vocab):
         self.spectra = df['spectrum']
         self.smiles = df['SMILES']
@@ -166,6 +211,17 @@ class SpectralSMILESDataset(Dataset):
                 torch.tensor(tokenized_smiles, dtype=torch.long))
 
 def load_tokenized_data(X_train, y_train, X_test, y_test, method, max_mz=None, batch_size=32):
+    '''create train and test DataLoaders 
+
+    Args:
+        X_train: training data spectrum
+        y_train: training data classification
+        X_test: test data spectrum
+        y_test: test data classification
+        method: tokenization method for spectral data
+        max_mz: maximum m/z value if precalculated, else calculated within
+        batch_size: chosen DataLoader batch size
+    '''
     if max_mz is None:
         max_mz = calculate_max_mz(X_train, 'spectrum')
     train_dataset = SpectralDataset(X_train, y_train, method, max_mz)
@@ -177,7 +233,11 @@ def load_tokenized_data(X_train, y_train, X_test, y_test, method, max_mz=None, b
     return train_loader, test_loader
 
 def init_checkpoint_folder(base_path):
-    """Initialize a new numbered folder for checkpoints."""
+    '''initialize a new checkpoint folder, named checkpoint_*, where * increments by 1 with each new checkpoint path
+
+    Args:
+        base_path: the location to initialize a new checkpoint file
+    '''
     i = 1
     while True:
         folder_path = os.path.join(base_path, f"checkpoint_{i}")
@@ -188,7 +248,18 @@ def init_checkpoint_folder(base_path):
         i += 1
 
 def save_model_meta(folder_path, model, optimizer, criterion, num_epochs, train_loader, test_loader, meta_tag):
-    """Save comprehensive model metadata to a JSON file."""
+    '''save a classification transformer model given a saved meta file
+
+    Args:
+        folder_path: folder to save meta.json file
+        model: model object to parse parameters for saving
+        optimizer: pytorch optimizer object to parse parameters for saving
+        criterion: pytorch criterion or loss object to parse parameters for saving
+        num_epochs: number of epochs the model is to be trained to
+        train_loader: pytorch DataLoader object containing train data
+        test_loader: pytorch DataLoader object containing test data
+        meta_tag: text tag to include in meta.json file for user reference
+    '''
     meta = {
         "model": {
             "name": type(model).__name__,
@@ -226,7 +297,11 @@ def save_model_meta(folder_path, model, optimizer, criterion, num_epochs, train_
         json.dump(meta, f, indent=4)
 
 def load_model_from_meta(meta_path):
-    """Load model and recreate training setup from metadata."""
+    '''load a classification transformer model given a saved meta file
+
+    Args:
+        meta_path: filepath of specified meta.json file
+    '''
     with open(meta_path, 'r') as f:
         meta = json.load(f)
     
@@ -248,6 +323,22 @@ def load_model_from_meta(meta_path):
     return model, optimizer, criterion, meta['training']['num_epochs']
 
 def train_model(model, train_loader, test_loader, optimizer, criterion, num_epochs=50, evaluate=True, verbose=1, checkpoint_path=None, from_checkpoint=None, meta_tag=None):
+    '''train a transformer encoder/decoder model for spectra to classification
+
+    Args:
+        model: Sequence to sequence transformer object.  Will be overwritten if continuing training from checkpoint
+        train_loader: pytorch DataLoader for train object
+        test_loader: pytorch DataLoader for test data
+        optimizer: pytorch optimizer object
+        criterion: pytorch criterion or loss object
+        evaluate: boolean, whether or not to run evaluation on specified test_loader data
+        verbose: [0,1] training verbosity field
+            0: no metric reporting
+            1: training and evaluation progress bars created for each epoch
+        checkpoint_path: location to save checkpoint files.  If not specified, no checkpoints saved
+        from_checkpoint: whether to restart training from latest checkpoint in checkpoint path
+        meta_tag: text tag to include in meta.json file for user reference
+    '''   
     device = next(model.parameters()).device
     if evaluate:
         history = {'loss':{}, 'accuracy':{}}
@@ -363,7 +454,26 @@ def train_model(model, train_loader, test_loader, optimizer, criterion, num_epoc
 
     return model, history
 
-def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_seq, num_epochs=50, criterion_cls=None, evaluate=True, verbose=1, checkpoint_path=None, from_checkpoint=None, meta_tag=None, use_tensorboard=False):
+def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_seq, num_epochs=50, evaluate=True, verbose=1, checkpoint_path=None, from_checkpoint=None, meta_tag=None, use_tensorboard=False):
+    '''train a transformer encoder/decoder model for spectra to SMILES
+
+    Args:
+        model: Sequence to sequence transformer object.  Will be overwritten if continuing training from checkpoint
+        train_loader: pytorch DataLoader for train object
+        test_loader: pytorch DataLoader for test data
+        optimizer: pytorch optimizer object
+        criterion_seq: pytorch criterion or loss object
+        num_epochs: number of epochs to train
+        evaluate: boolean, whether or not to run evaluation on specified test_loader data
+        verbose: [0,1,2] training verbosity field
+            0: no metric reporting
+            1: training and evaluation progress bars created for each epoch
+            2: progress bars and evaluation metrics printed per epoch
+        checkpoint_path: location to save checkpoint files.  If not specified, no checkpoints saved
+        from_checkpoint: whether to restart training from latest checkpoint in checkpoint path
+        meta_tag: text tag to include in meta.json file for user reference
+        use_tensorboard: flag to initialize tensorboard metric tracking
+    '''    
     device = next(model.parameters()).device
     history = {
         'train_loss': {},
@@ -426,7 +536,7 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
         model.train()
         total_seq_loss = 0
         
-        if verbose == 1:
+        if verbose >= 1:
             train_pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Train]', leave=False)
     
         for x_batch, y_seq_batch in train_loader:
@@ -444,7 +554,7 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
             
             total_seq_loss += seq_loss.item()
 
-            if verbose == 1:
+            if verbose >= 1:
                 train_pbar.update(1)
                 train_pbar.set_postfix({'train_loss': f'{seq_loss.item():.4f}'})
         
@@ -456,7 +566,7 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
             writer.add_scalar('train_loss', avg_train_seq_loss, epoch)
 
         if evaluate:
-            '''if verbose == 1:
+            '''if verbose >= 1:
                 print(f'Epoch {epoch+1}/{num_epochs} [Eval]')'''
             eval_results = evaluate_model_seq2seq(model, test_loader, train_loader.dataset.smiles_vocab, verbose=verbose)
             
@@ -497,6 +607,11 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
     return model, history
 
 def load_seq2seq_from_meta(meta_path):
+    '''load a sequence to sequence transformer model given a saved meta file
+
+    Args:
+        meta_path: filepath of specified meta.json file
+    '''
     with open(meta_path, 'r') as f:
         meta = json.load(f)
     
@@ -519,7 +634,19 @@ def load_seq2seq_from_meta(meta_path):
     
     return model, optimizer, criterion_cls, criterion_seq, meta['training']['num_epochs']
 
-def save_seq2seq_model_meta(folder_path, model, optimizer, criterion_cls, criterion_seq, num_epochs, train_loader, test_loader, meta_tag):
+def save_seq2seq_model_meta(folder_path, model, optimizer, criterion_seq, num_epochs, train_loader, test_loader, meta_tag):
+    '''save a sequence to sequence transformer model given a saved meta file
+
+    Args:
+        folder_path: folder to save meta.json file
+        model: model object to parse parameters for saving
+        optimizer: pytorch optimizer object to parse parameters for saving
+        criterion_seq: pytorch criterion or loss object to parse parameters for saving
+        num_epochs: number of epochs the model is to be trained to
+        train_loader: pytorch DataLoader object containing train data
+        test_loader: pytorch DataLoader object containing test data
+        meta_tag: text tag to include in meta.json file for user reference
+    '''
     meta = {
         "model": {
             "name": type(model).__name__,
@@ -536,7 +663,6 @@ def save_seq2seq_model_meta(folder_path, model, optimizer, criterion_cls, criter
             "lr": optimizer.param_groups[0]['lr'],
             "weight_decay": optimizer.param_groups[0].get('weight_decay', 0)
         },
-        "criterion_cls": type(criterion_cls).__name__,
         "criterion_seq": type(criterion_seq).__name__,
         "training": {
             "num_epochs": num_epochs,
@@ -559,6 +685,15 @@ def save_seq2seq_model_meta(folder_path, model, optimizer, criterion_cls, criter
         json.dump(meta, f, indent=4)
 
 def create_smiles_vocab(smiles_list, tokenization='character'):
+    '''create SMILES vocabulary object based on tokenization method and SMILES list 
+
+    Args:
+        smiles_list: List of SMILES strings
+        tokenization: method for tokenizations.  currently implemented are:
+            character
+            atom_wise
+            substructure
+    '''
     vocab = {'<pad>': 0, '<sos>': 1, '<eos>': 2, '<unk>': 3}
     
     unique_smiles = set(smiles_list)
@@ -580,6 +715,16 @@ def create_smiles_vocab(smiles_list, tokenization='character'):
     return vocab
 
 def load_tokenized_data_with_smiles(df_train, df_test, method, smiles_vocab, max_mz=None, batch_size=32):
+    '''create train and test DataLoaders 
+
+    Args:
+        df_train: pandas DataFrame containing training data
+        df_test: pandas DataFrame containing test data
+        method: tokenization method for spectral data
+        smiles_vocab: the SMILES vocabulary to use in dataset creation
+        max_mz: maximum m/z value if precalculated, else calculated within
+        batch_size: chosen DataLoader batch size
+    '''
     if max_mz is None:
         max_mz = calculate_max_mz(df_train, 'spectrum')
     
@@ -592,6 +737,11 @@ def load_tokenized_data_with_smiles(df_train, df_test, method, smiles_vocab, max
     return train_loader, test_loader
 
 def collate_fn(batch):
+    '''collate and pad spectra and smiles from batch
+
+    Args:
+        batch: batch from pytorch DataLoader
+    '''
     spectra, smiles = zip(*batch)
     spectra = torch.stack(spectra)
     
@@ -604,6 +754,15 @@ def collate_fn(batch):
     return spectra, padded_smiles
 
 def evaluate_model_seq2seq(model, test_loader, smiles_vocab, verbose=0, test=False):
+    '''code to run evaluation of a seq2seq transformer model
+
+    Args:
+        model: seq2seq model for evaluation
+        test_loader: pytorch DataLoader containing test data
+        smiles_vocab: vocabulary used in encoding SMILES values
+        verbose: [0,1] if 1, use tqdm ptogress bars
+        test: boolean, use during testing to print results
+    '''
     device = next(model.parameters()).device
     model.eval()
     seq_correct = 0
@@ -677,14 +836,31 @@ def evaluate_model_seq2seq(model, test_loader, smiles_vocab, verbose=0, test=Fal
     }
     
 def save_vocab(vocab, file_path):
+    '''save vocabulary file
+
+    Args:
+        file_path: path to save specified vocabulary
+    '''
     with open(file_path, 'wb') as f:
         pickle.dump(vocab, f)
 
 def load_vocab(file_path):
+    '''load vocabulary file
+
+    Args:
+        file_path: path to specified vocabulary
+    '''
     with open(file_path, 'rb') as f:
         return pickle.load(f)
 
 def get_or_create_smiles_vocabs(df, vocab_dir='./vocabs', force_create=False):
+    '''calculate the Dice similarity between the true and predicted SMILES values
+
+    Args:
+        df: pandas DataFrame with required 'SMILES' column
+        vocab_dir: directory to save vocabularies
+        force_create: boolean, force recreation rather than loading from a saved vocabulary
+    '''
     os.makedirs(vocab_dir, exist_ok=True)
     
     smiles_vocabs = {}
@@ -707,6 +883,11 @@ def get_or_create_smiles_vocabs(df, vocab_dir='./vocabs', force_create=False):
     return smiles_vocabs
 
 def is_valid_smiles(smiles):
+    '''check if SMILES string corresponds to valid molecule
+
+    Args:
+        smiles: a SMILES string
+    '''
     try:
         mol = Chem.MolFromSmiles(smiles)
         return mol is not None
@@ -714,6 +895,11 @@ def is_valid_smiles(smiles):
         return False
 
 def calculate_valid_smiles_percentage(predicted_smiles):
+    '''calculate the percentage of valid SMILES strings
+
+    Args:
+        predicted_smiles: a list of SMILES strings
+    '''
     valid_count = 0
     for smiles in predicted_smiles:
         if is_valid_smiles(smiles):
@@ -726,6 +912,12 @@ def calculate_valid_smiles_percentage(predicted_smiles):
     return (valid_count / len(predicted_smiles))
 
 def calculate_tanimoto_similarity(true_smiles, pred_smiles):
+    '''calculate the Tanimoto similarity between the true and predicted SMILES values
+
+    Args:
+        true_smiles: either one or a list of true SMILES strings
+        pred_smiles: either one or a list of predicted SMILES strings
+    '''
     if len(true_smiles) != len(pred_smiles):
         return 0.0
 
@@ -752,6 +944,12 @@ def calculate_tanimoto_similarity(true_smiles, pred_smiles):
     return sum(similarities) / len(similarities) if similarities else 0.0
 
 def calculate_dice_similarity(true_smiles, pred_smiles):
+    '''calculate the Dice similarity between the true and predicted SMILES values
+
+    Args:
+        true_smiles: either one or a list of true SMILES strings
+        pred_smiles: either one or a list of predicted SMILES strings
+    '''
     if len(true_smiles) != len(pred_smiles):
         return 0.0
 
@@ -782,6 +980,11 @@ def calculate_average_edit_distance(true_smiles, pred_smiles):
     return sum(distances) / len(distances)
 
 def plot_training_history(history):
+    '''plot training history using relevant metrics
+
+    Args:
+        history: json object containing training history of model
+    '''
     metrics = ['train_loss', 'test_loss', 'test_accuracy', 'valid_smiles_percentage', 'tanimoto_similarity', 'dice_similarity', 'avg_edit_distance']
     fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(15, 20))
     fig.suptitle('Training History', fontsize=16)
