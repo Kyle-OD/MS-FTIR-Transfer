@@ -21,10 +21,13 @@ def plot_spectrum_length_histogram(df, spectrum_column, bin_size=2, yscale='line
     plt.figure(figsize=(12, 6))
     plt.hist(spectrum_counts, bins=range(0, max(spectrum_counts) + bin_size, bin_size), 
              edgecolor='black')
-    plt.xlabel('Number of Spectrum Values')
-    plt.ylabel('Frequency')
+    plt.xlabel('Number of Data Points')
+    if yscale == 'log':
+        plt.ylabel('Frequency (log10)')
+    else:
+        plt.ylabel('Frequency')
     plt.yscale(yscale)
-    plt.title('Histogram of Number of Spectrum Values per Spectrum')
+    plt.title('Number of Data Points per Spectrum')
     plt.grid(axis='y', linestyle='--', alpha=0.7)
     plt.show()
 
@@ -62,9 +65,9 @@ def plot_mz_histogram(df, spectrum_column='spectrum', bin_size=2, min_mz=0, max_
     plt.hist(all_mz_values, bins=bins, edgecolor='black', alpha=0.7)
     plt.xlabel('m/z')
     plt.ylabel('Frequency')
-    plt.title(f'Histogram of m/z Values Across All Spectra (Bin Size: {bin_size})')
+    plt.title(f'Count of m/z Values Across Dataset (Bin Size: {bin_size})')
     plt.xlim(min_mz, max_mz)
-    plt.xticks(np.arange(min_mz, max_mz + 1, max(20, bin_size * 10)))  # Adjust tick frequency
+    plt.xticks(np.arange(min_mz, max_mz + 1, 200))#max(20, bin_size * 10)))  # Adjust tick frequency
     plt.grid(axis='y', linestyle='--', alpha=0.7)
     plt.show()
 
