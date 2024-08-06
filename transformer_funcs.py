@@ -99,12 +99,10 @@ class MS_VIT_Seq2Seq(nn.Module):
         num_layers: number of transformer encoder layers
         dim_feedforward: dimensionality of feedforward classifier network
         dropout: dropout percentage applied to entire model
-        num_classes: number of classes present in classification set
     '''
-    def __init__(self, smiles_vocab_size, embed_depth=16, d_model=256, nhead=8, num_layers=6, dim_feedforward=2048, dropout=0.1, num_classes=None):
+    def __init__(self, smiles_vocab_size, embed_depth=16, d_model=256, nhead=8, num_layers=6, dim_feedforward=2048, dropout=0.1):
         super().__init__()
         self.d_model = d_model
-        self.classification = num_classes is not None
         
         # Encoder
         self.embedding = nn.Linear(embed_depth, d_model)
@@ -119,8 +117,6 @@ class MS_VIT_Seq2Seq(nn.Module):
         
         # Output layers
         self.fc_smiles = nn.Linear(d_model, smiles_vocab_size)
-        if self.classification:
-            self.fc_classification = nn.Linear(d_model, num_classes)
         
         self.init_weights()
 
