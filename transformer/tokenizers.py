@@ -6,7 +6,12 @@ from rdkit import Chem
 from ms_data_funcs import bin_spectrum
 
 def direct_tokenization(binned_spectrum, window_size=16):
-    # Pad the spectrum if necessary
+    '''tokenize spectrum using direct binning
+
+    Args:
+        binned_spectrum: binned spectrum data
+        window_size: size of each token window
+    '''
     if len(binned_spectrum) % window_size != 0:
         pad_length = window_size - (len(binned_spectrum) % window_size)
         binned_spectrum = np.pad(binned_spectrum, (0, pad_length), mode='constant')
@@ -15,6 +20,12 @@ def direct_tokenization(binned_spectrum, window_size=16):
     return binned_spectrum.reshape(-1, window_size)
 
 def fourier_tokenization_2d(binned_spectrum, window_size=16):
+    '''tokenize spectrum using Fourier transform
+
+    Args:
+        binned_spectrum: binned spectrum data
+        window_size: size of each token window
+    '''
     fft = np.fft.fft(binned_spectrum)
     magnitude_spectrum = np.abs(fft[:len(fft)//2])
     
@@ -27,6 +38,13 @@ def fourier_tokenization_2d(binned_spectrum, window_size=16):
     return magnitude_spectrum.reshape(-1, window_size)
 
 def wavelet_tokenization_2d(binned_spectrum, window_size=16, wavelet='db1'):
+    '''tokenize spectrum using wavelet transform
+
+    Args:
+        binned_spectrum: binned spectrum data
+        window_size: size of each token window
+        wavelet: type of wavelet to use
+    '''
     coeffs = pywt.wavedec(binned_spectrum, wavelet)
     flat_coeffs = np.concatenate(coeffs)
     
@@ -39,6 +57,13 @@ def wavelet_tokenization_2d(binned_spectrum, window_size=16, wavelet='db1'):
     return flat_coeffs.reshape(-1, window_size)
 
 def peak_tokenization(spectrum_string, top_n=50, pad_to=50):
+    '''tokenize spectrum using top peaks
+
+    Args:
+        spectrum_string: string representation of spectrum data
+        top_n: number of top peaks to consider
+        pad_to: padding size for output
+    '''
     spectrum = ast.literal_eval(spectrum_string)
     spectrum.sort(key=lambda x: x[1], reverse=True)
     top_peaks = spectrum[:top_n]
@@ -51,6 +76,14 @@ def peak_tokenization(spectrum_string, top_n=50, pad_to=50):
     return np.array(flattened).reshape(-1, 2)
 
 def tokenize_spectrum(spectrum, method, max_mz, window_size=16):
+    '''tokenize spectrum using specified method
+
+    Args:
+        spectrum: spectrum data (string or array)
+        method: tokenization method to use
+        max_mz: maximum m/z value
+        window_size: size of each token window
+    '''
     if isinstance(spectrum, str):
         binned_spectrum = bin_spectrum(spectrum, max_mz)
     else:
@@ -68,6 +101,15 @@ def tokenize_spectrum(spectrum, method, max_mz, window_size=16):
         raise ValueError(f"Unknown tokenization method: {method}")
     
 def visualize_tokenization(spectrum, method, max_mz, window_size=16, path='./figures/tokenization/'):
+    '''visualize tokenized spectrum
+
+    Args:
+        spectrum: spectrum data
+        method: tokenization method used
+        max_mz: maximum m/z value
+        window_size: size of each token window
+        path: path to save the visualization
+    '''
     tokenized = tokenize_spectrum(spectrum, method, max_mz, window_size)
     
     plt.figure(figsize=(12, 6))
@@ -89,13 +131,29 @@ def visualize_tokenization(spectrum, method, max_mz, window_size=16, path='./fig
     plt.show()
 
 def character_tokenization(smiles):
+    '''tokenize SMILES string by character
+
+    Args:
+        smiles: SMILES string
+    '''
     return list(smiles)
 
 def atom_wise_tokenization(smiles):
+    '''tokenize SMILES string by atom
+
+    Args:
+        smiles: SMILES string
+    '''
     mol = Chem.MolFromSmiles(smiles)
     return [atom.GetSymbol() for atom in mol.GetAtoms()]
 
 def substructure_tokenization(smiles, max_length=10):
+    '''tokenize SMILES string by substructure
+
+    Args:
+        smiles: SMILES string
+        max_length: maximum length of substructure
+    '''
     tokens = []
     for i in range(len(smiles)):
         for j in range(1, max_length + 1):

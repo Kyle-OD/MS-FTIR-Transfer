@@ -4,6 +4,11 @@ import ast
 import matplotlib.pyplot as plt
 
 def count_spectrum_values(spectrum_string):
+    '''count the number of values in a spectrum string
+
+    Args:
+        spectrum_string: string representation of spectrum
+    '''
     try:
         spectrum_list = ast.literal_eval(spectrum_string)
         return len(spectrum_list)
@@ -11,6 +16,14 @@ def count_spectrum_values(spectrum_string):
         return 0
     
 def plot_spectrum_length_histogram(df, spectrum_column, bin_size=2, yscale='linear'):
+    '''plot histogram of spectrum lengths
+
+    Args:
+        df: pandas DataFrame containing spectrum data
+        spectrum_column: name of the column containing spectrum data
+        bin_size: size of histogram bins
+        yscale: scale for y-axis ('linear' or 'log')
+    '''
     # Count spectrum values for each row
     spectrum_counts = df[spectrum_column].apply(count_spectrum_values)
 
@@ -38,6 +51,11 @@ def plot_spectrum_length_histogram(df, spectrum_column, bin_size=2, yscale='line
     return spectrum_counts
 
 def extract_mz_values(spectrum_string):
+    '''extract m/z values from spectrum string
+
+    Args:
+        spectrum_string: string representation of spectrum
+    '''
     try:
         spectrum_list = ast.literal_eval(spectrum_string)
         return [peak[0] for peak in spectrum_list]  # Extract m/z values
@@ -45,6 +63,15 @@ def extract_mz_values(spectrum_string):
         return []  # Return empty list if there's an error parsing the string
 
 def plot_mz_histogram(df, spectrum_column='spectrum', bin_size=2, min_mz=0, max_mz=None):
+    '''plot histogram of m/z values
+
+    Args:
+        df: pandas DataFrame containing spectrum data
+        spectrum_column: name of the column containing spectrum data
+        bin_size: size of histogram bins
+        min_mz: minimum m/z value to plot
+        max_mz: maximum m/z value to plot (if None, calculated from data)
+    '''
     # Extract all m/z values
     all_mz_values = []
     for spectrum in df[spectrum_column]:
@@ -78,6 +105,11 @@ def plot_mz_histogram(df, spectrum_column='spectrum', bin_size=2, min_mz=0, max_
     return all_mz_values
 
 def extract_mz_abundance_values(spectrum_string):
+    '''extract m/z and abundance values from spectrum string
+
+    Args:
+        spectrum_string: string representation of spectrum
+    '''
     try:
         spectrum_list = ast.literal_eval(spectrum_string)
         mz = [peak[0] for peak in spectrum_list]
@@ -87,6 +119,14 @@ def extract_mz_abundance_values(spectrum_string):
         return []  # Return empty list if there's an error parsing the string
 
 def plot_all_abundance(df, spectrum_column='spectrum', min_mz=0, max_mz=None):
+    '''plot scatter plot of all abundance values
+
+    Args:
+        df: pandas DataFrame containing spectrum data
+        spectrum_column: name of the column containing spectrum data
+        min_mz: minimum m/z value to plot
+        max_mz: maximum m/z value to plot (if None, calculated from data)
+    '''
     # Extract all m/z values
     all_mz = []
     all_abundance = []

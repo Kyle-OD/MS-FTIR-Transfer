@@ -3,6 +3,11 @@ from typing import Dict, List, Tuple
 import csv
 
 def extract_compound_data(compound: Dict) -> Dict:
+    '''extract relevant compound data from dictionary
+
+    Args:
+        compound: dictionary containing compound data
+    '''
     result = {
         'kind': compound.get('kind', ''),
         'name': compound.get('names', [{}])[0].get('name', '') if compound.get('names') else '',
@@ -27,6 +32,11 @@ def extract_compound_data(compound: Dict) -> Dict:
     return result
 
 def extract_metadata(data: Dict) -> Dict:
+    '''extract relevant metadata from dictionary
+
+    Args:
+        data: dictionary containing metadata
+    '''
     result = {
         'exact_mass': '',
         'instrument': '',
@@ -53,6 +63,11 @@ def extract_metadata(data: Dict) -> Dict:
     return result
 
 def parse_spectrum(spectrum: str) -> List[Tuple[float, float]]:
+    '''parse spectrum string into list of (mass, abundance) tuples
+
+    Args:
+        spectrum: string representation of spectrum
+    '''
     result = []
     for pair in spectrum.split():
         try:
@@ -67,6 +82,11 @@ def parse_spectrum(spectrum: str) -> List[Tuple[float, float]]:
     return result
 
 def process_json(json_data: Dict) -> Dict:
+    '''process JSON data and extract relevant information
+
+    Args:
+        json_data: dictionary containing JSON data
+    '''
     result = {}
     
     if 'compound' in json_data and json_data['compound']:
@@ -80,6 +100,12 @@ def process_json(json_data: Dict) -> Dict:
     return result
 
 def process_json_file(file_path: str, output_csv: str):
+    '''process JSON file and write extracted data to CSV
+
+    Args:
+        file_path: path to input JSON file
+        output_csv: path to output CSV file
+    '''
     with open(file_path, 'r') as f:
         json_data = json.load(f)
     
