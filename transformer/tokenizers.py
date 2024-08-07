@@ -1,8 +1,9 @@
 import numpy as np
+import ast, pywt
 import matplotlib.pyplot as plt
-import pywt
-import ast
 from rdkit import Chem
+
+from ms_data_funcs import bin_spectrum
 
 def direct_tokenization(binned_spectrum, window_size=16):
     # Pad the spectrum if necessary
@@ -49,32 +50,6 @@ def peak_tokenization(spectrum_string, top_n=50, pad_to=50):
     
     return np.array(flattened).reshape(-1, 2)
 
-def calculate_max_mz(df, spectrum_column='spectrum'):
-    def get_max_mz(spectrum_string):
-        spectrum = ast.literal_eval(spectrum_string)
-        return max(peak[0] for peak in spectrum)
-
-    max_mz_series = df[spectrum_column].apply(get_max_mz)
-    return int(np.ceil(max_mz_series.max()))
-
-def bin_spectrum(spectrum_string, max_mz):
-    spectrum = ast.literal_eval(spectrum_string)
-    binned = np.zeros(max_mz + 1)  # +1 to include the max_mz value
-    
-    for mz, intensity in spectrum:
-        mz_int = int(np.round(mz))
-        if mz_int <= max_mz:
-            binned[mz_int] += intensity
-    
-    return binned
-
-def variable_density_bin_spectrum(spectrum_string, max_mz):
-    spectrum = ast.literal_eval(spectrum_string)
-    binned = np.zeros(max_mz+1)
-    for mz, intensity in spectrum:
-        continue
-    pass
-
 def tokenize_spectrum(spectrum, method, max_mz, window_size=16):
     if isinstance(spectrum, str):
         binned_spectrum = bin_spectrum(spectrum, max_mz)
@@ -91,7 +66,7 @@ def tokenize_spectrum(spectrum, method, max_mz, window_size=16):
         return wavelet_tokenization_2d(binned_spectrum, window_size)
     else:
         raise ValueError(f"Unknown tokenization method: {method}")
-
+    
 def visualize_tokenization(spectrum, method, max_mz, window_size=16, path='./figures/tokenization/'):
     tokenized = tokenize_spectrum(spectrum, method, max_mz, window_size)
     
@@ -113,10 +88,6 @@ def visualize_tokenization(spectrum, method, max_mz, window_size=16, path='./fig
     plt.savefig(path+method+".png")
     plt.show()
 
-# Function to get a sample spectrum
-def get_sample_spectrum(df):
-    return df['spectrum'].iloc[0]
-
 def character_tokenization(smiles):
     return list(smiles)
 
@@ -132,17 +103,32 @@ def substructure_tokenization(smiles, max_length=10):
                 tokens.append(smiles[i:i+j])
     return list(set(tokens))
 
-def is_valid_smiles(smiles):
-    if not isinstance(smiles, str):
-        return False
-    mol = Chem.MolFromSmiles(smiles)
-    return mol is not None
+def create_smiles_vocab(smiles_list, tokenization='character'):
+    '''create SMILES vocabulary object based on tokenization method and SMILES list 
 
-def remove_invalid_smiles(df):
-    # Drop rows with invalid SMILES
-    df['valid_smiles'] = df['SMILES'].apply(is_valid_smiles)
-    df = df[df['valid_smiles']]
-    df = df.drop('valid_smiles', axis=1)
-
-    print(f"Shape after dropping invalid SMILES: {df.shape}")
-    return df
+    Args:
+        smiles_list: List of SMILES strings
+        tokenization: method for tokenizations.  currently implemented are:
+            character
+            atom_wise
+            substructure
+    '''
+    vocab = {'<pad>': 0, '<sos>': 1, '<eos>': 2, '<unk>': 3}
+    
+    unique_smiles = set(smiles_list)
+    
+    for smiles in unique_smiles:
+        if tokenization == 'character':
+            tokens = character_tokenization(smiles)
+        elif tokenization == 'atom_wise':
+            tokens = atom_wise_tokenization(smiles)
+        elif tokenization == 'substructure':
+            tokens = substructure_tokenization(smiles)
+        else:
+            raise ValueError(f"Unknown tokenization method: {tokenization}")
+        
+        for token in tokens:
+            if token not in vocab:
+                vocab[token] = len(vocab)
+    
+    return vocab
