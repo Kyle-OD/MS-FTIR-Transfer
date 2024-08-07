@@ -1,6 +1,4 @@
 from MoNA_reader import process_json_file
-import numpy
-import time
 
 json_in_silico1 = "data/MoNA/MoNA-export-In-Silico_Spectra-json/MoNA-export-In-Silico_Spectra_pt1.json"
 json_in_silico2 = "data/MoNA/MoNA-export-In-Silico_Spectra-json/MoNA-export-In-Silico_Spectra_pt2.json"
