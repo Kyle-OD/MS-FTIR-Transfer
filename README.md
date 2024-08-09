@@ -4,7 +4,7 @@ Kyle O'Donnell
 
 ## Introduction
 
-This repository contains work started during my Summer 2024 internship through the [DoD SMART Scholar Program]()
+This repository contains work started during my Summer 2024 internship through the [DoD SMART Scholar Program](https://www.smartscholarship.org/smart)
 
 This is a long-term project that will be continued each Summer over my graduate program, and be updated intermittently throughout the school year.
 
@@ -30,9 +30,11 @@ The models in this repository were trained on an NVIDIA 4060 and an NVIDIA 3080.
 While we plan to use multiple types of electrochemical spectra eventually, the initial work and testing has used Mass Spectrometry (MS) data, as it is the most widely available in open datasets.  
 
 We sourced our data from the following sources:
-- MassBank of North America (MoNA) \[[download]()\]  
-- Pacific Northwest Lab (PNNL) FTIR data \[[download]()\]
-- GNPS \[[download]()\]
+- MassBank of North America (MoNA) \[[download](https://mona.fiehnlab.ucdavis.edu/downloads)\]  
+- Pacific Northwest National Lab (PNNL) FTIR data \[[download](https://data.pnnl.gov/group/nodes/dataset/12374)\]
+- Global Natural Products Social Molecular Networking (GNPS) \[[download](https://ccms-ucsd.github.io/GNPSDocumentation/gnpslibraries/)\]
+
+
 
 ## Model
 
