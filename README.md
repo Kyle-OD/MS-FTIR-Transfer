@@ -29,7 +29,10 @@ The models in this repository were trained on an NVIDIA 4060 and an NVIDIA 3080.
 
 While we plan to use multiple types of electrochemical spectra eventually, the initial work and testing has used Mass Spectrometry (MS) data, as it is the most widely available in open datasets.  
 
-We sourced our MS data from the [MassBank of North America (MoNA)]().  
+We sourced our data from the following sources:
+- MassBank of North America (MoNA) \[[download]()\]  
+- Pacific Northwest Lab (PNNL) FTIR data \[[download]()\]
+- GNPS \[[download]()\]
 
 ## Model
 
@@ -59,11 +62,48 @@ We have identified some potential paths to explore in future work on this projec
 - Explore a multimodal spectral approach to ingest spectra from a variety of electrochemical sensing technologies
 
 ## Usage
-### Data Extraction
+
+### Data Preparation
+
 #### Mass Spectrometry
+
+MassBank of 
+
+To process the MoNA data, functions in `MoNA_reader.py` can be used.  The format of the MoNA dataset is a list of nested JSON objects, which can be too large to process on a workstation.  If this is the case, you can split the list from the command line using `sed`, and prepending/appending list qualifiers `[/]` where necessary.
+
+To convert a MoNA JSON file to csv for easier processing, use the following code:
+```
+from MoNA_reader import process_json_file
+
+process_json_file(**path_to_json.json**, **path_to_save.csv**)
+```
+
 #### Fourier Transform Infrared
-### Transformer: Classifier
-### Transformer: MS to SMILES
+
+The FTIR data sourced from PNNL is saved in the SPC format, which is commonly used for FTIR data.  To read this information, we have used the utilities in `readspc.py` written and provided by Dr. Charles Davidson.  Extracting the FTIR spectra can be done following this format:
+
+```
+from readspc.py import read
+
+header, subheader, x, y = read(**path_to_spc.SPC**)
+```
+
+To generate plots for all PNNL FTIR files, see code in `plot_ftir.ipynb`
+
+### Model Training
+
+ 
+
+#### Transformer: Classifier
+
+All code for testing the encoder only transformer classifier can be found in `./transformer/classifier.py`
+
+For usage, see notebook `ms_transformer_exploration.ipynb`
+
+#### Transformer: MS to SMILES
+
+Code for generating
+
 ### Transfer Learning
 Future task
 ### Multimodal Spectral Transformer
