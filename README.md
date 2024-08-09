@@ -63,6 +63,8 @@ We have identified some potential paths to explore in future work on this projec
 
 ## Usage
 
+The code and notebooks in this repository will expect a certain format for data and file locations.  The recommended order for running the code follows the sections below.
+
 ### Data Preparation
 
 #### Mass Spectrometry
@@ -75,8 +77,10 @@ To convert a MoNA JSON file to csv for easier processing, use the following code
 ```
 from MoNA_reader import process_json_file
 
-process_json_file(**path_to_json.json**, **path_to_save.csv**)
+process_json_file(path_to_json.json, path_to_save.csv)
 ```
+
+An example of this can be seen in `MoNA_data_extract.py`
 
 #### Fourier Transform Infrared
 
@@ -85,14 +89,14 @@ The FTIR data sourced from PNNL is saved in the SPC format, which is commonly us
 ```
 from readspc.py import read
 
-header, subheader, x, y = read(**path_to_spc.SPC**)
+header, subheader, x, y = read(path_to_spc.SPC)
 ```
 
 To generate plots for all PNNL FTIR files, see code in `plot_ftir.ipynb`
 
 ### Model Training
 
- 
+This repository contains code to train a classifier and sequence prediction transformer model.  Model checkpoints can be saved and loaded if training needs to be split over multiple sessions.
 
 #### Transformer: Classifier
 
@@ -102,9 +106,35 @@ For usage, see notebook `ms_transformer_exploration.ipynb`
 
 #### Transformer: MS to SMILES
 
-Code for generating
+All code for testing the encoder only transformer classifier can be found in `./transformer/sequence_pred.py`
+
+For usage, see notebook `ms_seq2seq_train.ipynb`
 
 ### Transfer Learning
 Future task
 ### Multimodal Spectral Transformer
 Future task
+
+## File descriptions
+
+|File|Description|
+|---|---|
+|MoNA_data_extract.py|An example file for converting MoNA data from JSON to CSV|
+|MoNA_processed_exploration.ipynb|Notebook containing an exploration and figure generation of the processed MoNA data|
+|MoNA_raw_exploration.ipynb|Notebook containing an exploration of raw MoNA data, used for understand its format and write the JSON parser|
+|MoNA_reader.py|File containing functions for processing MoNA JSON structure into CSV|
+|ms_seq2seq_explore.ipynb|Notebook containing exploration and evaluation of different SMILES tokenization methods|
+|ms_seq2seq_train.ipynb|Notebook used to train best MS Spectra to SMILES sequence to sequence transformer|
+|ms_tokenizer_comparison.ipynb|Notebook containing exploration and evaluation of different MS Spectra tokenization methods|
+|ms_transformer_exploration.ipynb|Notebook used to test a varienty of training hyperparameters|
+|plot_ftir.ipynb|Notebook containing code to plot and save all FTIR spectra in the SPC format a given directory|
+|readspc.py|File containing classes and functions for parsing an SPC format FTIR spectra|
+|spc_test.py|An example file for reading an SPC file, returning all information contained within|
+|spectra_plotting.py|File containing functions for plotting statistics regarding the MS dataset|
+|transformer/classifier.py|Contains model class and training code for classification model|
+|transformer/evaluation.py|Contains various functions for evaluation metrics and evaluating model training runs|
+|transformer/io_funcs.py|Contains various functions for initializing checkpoint paths, and saving and loading model information vocabularies|
+|transformer/ms_data_funcs.py|Contains functions specific to the use of MS Spectra|
+|transformer/sequence_pred.py|Contains model class and training code for MS Spectra to SMILES sequence to sequence model|
+|transformer/tokenizers.py|Contains functions for tokenization methods for both spectra and SMILES|
+|transformer/transformer_utils.py|Contains classes and functions utilized in the transformer models|
