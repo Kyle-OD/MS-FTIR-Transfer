@@ -3,7 +3,7 @@ import ast, pywt
 import matplotlib.pyplot as plt
 from rdkit import Chem
 
-from transformer.ms_data_funcs import bin_spectrum
+from transformer.data_funcs import bin_spectrum
 
 def direct_tokenization(binned_spectrum, window_size=16):
     '''tokenize spectrum using direct binning
@@ -160,33 +160,3 @@ def substructure_tokenization(smiles, max_length=10):
             if i + j <= len(smiles):
                 tokens.append(smiles[i:i+j])
     return list(set(tokens))
-
-def create_smiles_vocab(smiles_list, tokenization='character'):
-    '''create SMILES vocabulary object based on tokenization method and SMILES list 
-
-    Args:
-        smiles_list: List of SMILES strings
-        tokenization: method for tokenizations.  currently implemented are:
-            character
-            atom_wise
-            substructure
-    '''
-    vocab = {'<pad>': 0, '<sos>': 1, '<eos>': 2, '<unk>': 3}
-    
-    unique_smiles = set(smiles_list)
-    
-    for smiles in unique_smiles:
-        if tokenization == 'character':
-            tokens = character_tokenization(smiles)
-        elif tokenization == 'atom_wise':
-            tokens = atom_wise_tokenization(smiles)
-        elif tokenization == 'substructure':
-            tokens = substructure_tokenization(smiles)
-        else:
-            raise ValueError(f"Unknown tokenization method: {tokenization}")
-        
-        for token in tokens:
-            if token not in vocab:
-                vocab[token] = len(vocab)
-    
-    return vocab

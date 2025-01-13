@@ -1,59 +1,9 @@
 import torch
-from torch import nn
-import math, os
+import os
 from tqdm.notebook import tqdm # swap with line below if not using jupyter notebook
 #from tqdm import tqdm
 
 from transformer.io_funcs import save_model_meta, load_model_from_meta, init_checkpoint_folder
-from transformer.transformer_utils import PositionalEncoding
-
-class MS_VIT(nn.Module):
-    '''pytorch module classifying from mass spectral input
-
-    Args:
-        num_classes: number of classes present in classification set
-        embed_depth: token depth
-        d_model: dimensionality of the internal states of the model
-        n_head: number of attention heads
-        num_layers: number of transformer encoder layers
-        dim_feedforward: dimensionality of feedforward classifier network
-        dropout: dropout percentage applied to entire model
-    '''
-    def __init__(self, num_classes, embed_depth=16, d_model=256, nhead=8, num_layers=6, dim_feedforward=2048, dropout=0.1):
-        super().__init__()
-        self.d_model = d_model
-        # Initial embedding layer
-        self.embedding = nn.Linear(embed_depth, d_model)
-        # Positional encoding
-        self.pos_encoder = PositionalEncoding(d_model)
-        # Transformer encoder
-        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers)
-        # Final classification layer
-        self.fc = nn.Linear(d_model, num_classes)
-        
-        self.init_weights()
-
-    def init_weights(self):
-        initrange = 0.1
-        self.embedding.weight.data.uniform_(-initrange, initrange)
-        self.fc.bias.data.zero_()
-        self.fc.weight.data.uniform_(-initrange, initrange)
-
-    def forward(self, src):
-        # src shape: (batch_size, seq_length, 16)
-        # Embed the input
-        src = self.embedding(src) * math.sqrt(self.d_model)
-        # Add positional encoding
-        src = self.pos_encoder(src.transpose(0, 1))
-        # Pass through transformer encoder
-        output = self.transformer_encoder(src)
-        # Global average pooling
-        output = output.mean(dim=0)
-        # Classification
-        output = self.fc(output)
-        
-        return output
     
 def train_model(model, train_loader, test_loader, optimizer, criterion, num_epochs=50, evaluate=True, verbose=1, checkpoint_path=None, from_checkpoint=None, meta_tag=None):
     '''train a transformer encoder/decoder model for spectra to classification

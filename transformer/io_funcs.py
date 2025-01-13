@@ -1,9 +1,8 @@
-import os, json, pickle
+import os, json
 import torch
 from datetime import datetime
 
-from transformer.classifier import MS_VIT
-from transformer.models import MS_VIT_Seq2Seq
+from transformer.models import MS_VIT, MS_VIT_Seq2Seq
 
 def init_checkpoint_folder(base_path):
     '''initialize a new checkpoint folder, named checkpoint_*, where * increments by 1 with each new checkpoint path
@@ -172,21 +171,3 @@ def save_seq2seq_model_meta(folder_path, model, optimizer, criterion_seq, num_ep
     
     with open(os.path.join(folder_path, "model_meta.json"), "w") as f:
         json.dump(meta, f, indent=4)
-
-def save_vocab(vocab, file_path):
-    '''save vocabulary file
-
-    Args:
-        file_path: path to save specified vocabulary
-    '''
-    with open(file_path, 'wb') as f:
-        pickle.dump(vocab, f)
-
-def load_vocab(file_path):
-    '''load vocabulary file
-
-    Args:
-        file_path: path to specified vocabulary
-    '''
-    with open(file_path, 'rb') as f:
-        return pickle.load(f)

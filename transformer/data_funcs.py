@@ -69,3 +69,10 @@ def remove_invalid_smiles(df):
 
     print(f"Shape after dropping invalid SMILES: {df.shape}")
     return df
+
+def format_ir_spectra(s):
+    s.strip('[]')
+    s=s.split()
+
+def format_ir_dataframe(df, data_column: str):
+    pass

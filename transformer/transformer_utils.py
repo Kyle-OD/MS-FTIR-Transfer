@@ -2,16 +2,14 @@ import torch
 import torch.nn
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
-from torch.utils.tensorboard import SummaryWriter
-import math, os, json
-from datetime import datetime
+import math, os
 from rdkit import RDLogger
 from tqdm.notebook import tqdm # swap with line below if not using jupyter notebook
 #from tqdm import tqdm
 
-from transformer.tokenizers import tokenize_spectrum, create_smiles_vocab
-from transformer.ms_data_funcs import calculate_max_mz
-from transformer.io_funcs import save_vocab, load_vocab
+from transformer.tokenizers import tokenize_spectrum
+from transformer.vocabs import create_smiles_vocab
+from transformer.data_funcs import calculate_max_mz
 
 # Suppress RDKit warnings
 RDLogger.DisableLog('rdApp.*')
@@ -151,32 +149,3 @@ def collate_fn(batch):
         padded_smiles[i, :len(s)] = s.clone().detach()  # Changed this line
     
     return spectra, padded_smiles
-
-def get_or_create_smiles_vocabs(df, vocab_dir='./vocabs', force_create=False):
-    '''calculate the Dice similarity between the true and predicted SMILES values
-
-    Args:
-        df: pandas DataFrame with required 'SMILES' column
-        vocab_dir: directory to save vocabularies
-        force_create: boolean, force recreation rather than loading from a saved vocabulary
-    '''
-    os.makedirs(vocab_dir, exist_ok=True)
-    
-    smiles_vocabs = {}
-    tokenization_methods = ['character', 'atom_wise', 'substructure']
-    
-    for method in tokenization_methods:
-        vocab_path = os.path.join(vocab_dir, f'smiles_vocab_{method}.pkl')
-        
-        if os.path.exists(vocab_path) and not force_create:
-            print(f"Loading existing {method} vocabulary...")
-            smiles_vocabs[method] = load_vocab(vocab_path)
-        else:
-            print(f"Creating new {method} vocabulary...")
-            vocab = create_smiles_vocab(df['SMILES'].unique(), tokenization=method)
-            save_vocab(vocab, vocab_path)
-            smiles_vocabs[method] = vocab
-        
-        print(f"SMILES vocabulary size ({method}): {len(smiles_vocabs[method])}")
-    
-    return smiles_vocabs
