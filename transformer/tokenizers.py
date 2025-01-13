@@ -3,7 +3,7 @@ import ast, pywt
 import matplotlib.pyplot as plt
 from rdkit import Chem
 
-from ms_data_funcs import bin_spectrum
+from transformer.ms_data_funcs import bin_spectrum
 
 def direct_tokenization(binned_spectrum, window_size=16):
     '''tokenize spectrum using direct binning

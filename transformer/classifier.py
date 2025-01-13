@@ -4,8 +4,8 @@ import math, os
 from tqdm.notebook import tqdm # swap with line below if not using jupyter notebook
 #from tqdm import tqdm
 
-from io_funcs import save_model_meta, load_model_from_meta, init_checkpoint_folder
-from transformer_utils import PositionalEncoding
+from transformer.io_funcs import save_model_meta, load_model_from_meta, init_checkpoint_folder
+from transformer.transformer_utils import PositionalEncoding
 
 class MS_VIT(nn.Module):
     '''pytorch module classifying from mass spectral input

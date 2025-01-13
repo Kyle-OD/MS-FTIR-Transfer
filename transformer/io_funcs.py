@@ -2,8 +2,8 @@ import os, json, pickle
 import torch
 from datetime import datetime
 
-from classifier import MS_VIT
-from sequence_pred import MS_VIT_Seq2Seq
+from transformer.classifier import MS_VIT
+from transformer.models import MS_VIT_Seq2Seq
 
 def init_checkpoint_folder(base_path):
     '''initialize a new checkpoint folder, named checkpoint_*, where * increments by 1 with each new checkpoint path

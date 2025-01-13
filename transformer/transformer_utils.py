@@ -9,9 +9,9 @@ from rdkit import RDLogger
 from tqdm.notebook import tqdm # swap with line below if not using jupyter notebook
 #from tqdm import tqdm
 
-from tokenizers import tokenize_spectrum, create_smiles_vocab
-from ms_data_funcs import calculate_max_mz
-from io_funcs import save_vocab, load_vocab
+from transformer.tokenizers import tokenize_spectrum, create_smiles_vocab
+from transformer.ms_data_funcs import calculate_max_mz
+from transformer.io_funcs import save_vocab, load_vocab
 
 # Suppress RDKit warnings
 RDLogger.DisableLog('rdApp.*')

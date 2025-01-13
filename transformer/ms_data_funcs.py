@@ -1,7 +1,8 @@
 import numpy as np
 import ast
 
-from evaluation import is_valid_smiles
+from transformer.evaluation import is_valid_smiles
+#from evaluation import is_valid_smiles
 
 def calculate_max_mz(df, spectrum_column='spectrum'):
     '''calculate the maximum m/z value in the dataset

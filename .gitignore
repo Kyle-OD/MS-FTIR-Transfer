@@ -2,3 +2,4 @@ data/*
 vocabs/*
 runs/*
 *.pth
+*.pyc
