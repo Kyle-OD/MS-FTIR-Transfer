@@ -15,10 +15,10 @@ modalities = {
     'MS/MS Negative 40ev': 'msms_cfmid_negative_40ev',
 }
 modalities_2 = {
-    'HSQC NMR': 'hsqc_nmr_spectrum',
-    'H NMR': 'h_nmr_spectra',
-    'C NMR': 'c_nmr_spectra',
-    'MS/MS Iceberg Positive': 'msms_iceberg_positive',
+    #'HSQC NMR': 'hsqc_nmr_spectrum',
+    #'H NMR': 'h_nmr_spectra',
+    #'C NMR': 'c_nmr_spectra',
+    #'MS/MS Iceberg Positive': 'msms_iceberg_positive',
     'MS/MS Scarf Positive': 'msms_scarf_positive'
 }
 
@@ -27,15 +27,15 @@ total_files = len(parquet_files)
 
 print("Total files:", total_files)
 
-for (key, value) in modalities.items():
-    print(key)
-    df = pd.DataFrame(columns=['smiles', value])
-    for file in parquet_files:
-        temp = pd.read_parquet(file, columns=['smiles', value])
-        print('.', end='')
-        df = pd.concat([df, temp], axis=0)
-    df.reset_index(drop=True).to_feather('data/'+value+'_v2.feather')
-    print('')
+# for (key, value) in modalities.items():
+#     print(key)
+#     df = pd.DataFrame(columns=['smiles', value])
+#     for file in parquet_files:
+#         temp = pd.read_parquet(file, columns=['smiles', value])
+#         print('.', end='')
+#         df = pd.concat([df, temp], axis=0)
+#     df.reset_index(drop=True).to_feather('data/'+value+'_v2.feather')
+#     print('')
 
 for (key, value) in modalities_2.items():
     print(key)
@@ -43,6 +43,6 @@ for (key, value) in modalities_2.items():
     for file in parquet_files:
         temp = pd.read_parquet(file, columns=['smiles', value])
         print('.', end='')
-        pd.concat([df, temp], axis=0)
+        df = pd.concat([df, temp], axis=0)
     df.reset_index(drop=True).to_feather('data/'+value+'_v2.feather')
     print('')

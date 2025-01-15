@@ -89,6 +89,52 @@ class SpectralSMILESDataset(Dataset):
         return (torch.tensor(tokenized_spectrum, dtype=torch.float32).unsqueeze(0), 
                 torch.tensor(tokenized_smiles, dtype=torch.long))
     
+class MultimodalSpectralSMILESDataset(torch.utils.data.Dataset):
+    '''Dataset class for handling multiple spectral modalities
+    Args:
+        data: dict of dataframes for each modality 
+        smiles: SMILES strings
+        tokenization_methods: dict of tokenization methods for each modality
+        max_values: dict of maximum values for each modality
+        smiles_vocab: vocabulary for SMILES tokenization
+    '''
+    def __init__(self, data, smiles, tokenization_methods, max_values, smiles_vocab):
+        self.data = data
+        self.smiles = smiles
+        self.tokenization_mehtods = tokenization_methods
+        self.max_values = max_values
+        self.smiles_vocab = smiles_vocab
+
+    def __len__(self):
+        return len(self.smiles)
+    
+    def __getitem__(self, idx):
+        # Process each modality
+        processed_inputs = {}
+        for modality, df in self.data.items():
+            spectrum = df.iloc[idx]['spectrum']
+            tokenized = tokenize_spectrum(
+                spectrum,
+                self.tokenization_methods[modality],
+                self.max_values[modality]
+            )
+            processed_inputs[modality] = torch.tensor(
+                tokenized,
+                dtype=torch.float32
+            ).unsqueeze(0)
+        
+        # Process SMILES
+        smiles = self.smiles.iloc[idx]
+        tokenized_smiles = [self.smiles_vocab['<sos>']]
+        for token in smiles:
+            tokenized_smiles.append(
+                self.smiles_vocab.get(token, self.smiles_vocab['<unk>'])
+            )
+        tokenized_smiles.append(self.smiles_vocab['<eos>'])
+        
+        return processed_inputs, torch.tensor(tokenized_smiles, dtype=torch.long)
+    
+    
 def load_tokenized_data(X_train, y_train, X_test, y_test, method, max_mz=None, batch_size=32):
     '''create train and test DataLoaders 
 
@@ -149,3 +195,85 @@ def collate_fn(batch):
         padded_smiles[i, :len(s)] = s.clone().detach()  # Changed this line
     
     return spectra, padded_smiles
+
+def multimodal_collate_fn(batch):
+    '''Collate function for multimodal batches'''
+    # Separate inputs and targets
+    inputs_list, smiles_list = zip(*batch)
+    
+    # Process each modality
+    processed_inputs = {}
+    for modality in inputs_list[0].keys():
+        modality_tensors = [sample[modality] for sample in inputs_list]
+        processed_inputs[modality] = torch.stack(modality_tensors)
+    
+    # Pad SMILES sequences
+    max_len = max(len(s) for s in smiles_list)
+    padded_smiles = torch.zeros(len(smiles_list), max_len, dtype=torch.long)
+    for i, s in enumerate(smiles_list):
+        padded_smiles[i, :len(s)] = s
+    
+    return processed_inputs, padded_smiles
+
+def decode_beam_search_results(beams, inv_smiles_vocab):
+    '''Convert beam search results to SMILES strings
+    
+    Args:
+        beams: beam search results from MS_VIT_Seq2Seq_Beam
+        inv_smiles_vocab: inverse vocabulary mapping
+    '''
+    all_predictions = []
+    
+    for beam in beams:
+        predictions = []
+        for i in range(len(beam['sequences'])):
+            tokens = beam['sequences'][i].tolist()
+            smiles = ''.join([inv_smiles_vocab[token] for token in tokens 
+                            if token not in [0, 1, 2]])  # Exclude pad, sos, eos
+            score = beam['scores'][i].item()
+            predictions.append((smiles, score))
+        all_predictions.append(predictions)
+    
+    return all_predictions
+
+def evaluate_model_seq2seq_beam(model, test_loader, smiles_vocab, beam_width=5, verbose=0):
+    '''Evaluate sequence to sequence model with beam search
+    
+    Args:
+        model: MS_VIT_Seq2Seq_Beam model
+        test_loader: pytorch DataLoader for test data
+        smiles_vocab: vocabulary used in encoding SMILES values
+        beam_width: number of beams to maintain
+        verbose: verbosity level (0-1)
+    '''
+    device = next(model.parameters()).device
+    model.eval()
+    
+    inv_smiles_vocab = {v: k for k, v in smiles_vocab.items()}
+    all_predictions = []
+    all_true_smiles = []
+    
+    if verbose == 1:
+        pbar = tqdm(test_loader, desc='Evaluating', leave=False)
+    
+    with torch.no_grad():
+        for x_batch, y_seq_batch in test_loader:
+            x_batch = x_batch.to(device)
+            x_batch = x_batch.squeeze(1)
+            
+            # Get beam search predictions
+            beams = model.beam_search(x_batch, beam_width=beam_width)
+            batch_predictions = decode_beam_search_results(beams, inv_smiles_vocab)
+            all_predictions.extend(batch_predictions)
+            
+            # Get true SMILES
+            for seq in y_seq_batch:
+                true_smiles = ''.join([inv_smiles_vocab[token.item()] 
+                                     for token in seq 
+                                     if token.item() not in [0, 1, 2]])
+                all_true_smiles.append(true_smiles)
+            
+            if verbose == 1:
+                pbar.update(1)
+    
+    return all_predictions, all_true_smiles
