@@ -10,6 +10,12 @@ from tqdm.notebook import tqdm # swap with line below if not using jupyter noteb
 from transformer.tokenizers import tokenize_spectrum
 from transformer.vocabs import create_smiles_vocab
 from transformer.data_funcs import calculate_max_mz
+from transformer.evaluation import (
+    calculate_average_edit_distance,
+    calculate_dice_similarity,
+    calculate_tanimoto_similarity,
+    calculate_valid_smiles_percentage
+)
 
 # Suppress RDKit warnings
 RDLogger.DisableLog('rdApp.*')
@@ -97,18 +103,36 @@ class MultimodalSpectralSMILESDataset(torch.utils.data.Dataset):
         tokenization_methods: dict of tokenization methods for each modality
         max_values: dict of maximum values for each modality
         smiles_vocab: vocabulary for SMILES tokenization
+        ms_peaks_only: boolean signifying whether MS data is full spectrum or only peaks
     '''
     def __init__(self, data, smiles, tokenization_methods, max_values, smiles_vocab):
-        self.data = data
-        self.smiles = smiles
-        self.tokenization_mehtods = tokenization_methods
+        self.tokenization_methods = tokenization_methods
         self.max_values = max_values
         self.smiles_vocab = smiles_vocab
+
+        # Verify all modalities have the same number of samples
+        lengths = [len(df) for df in data.values()]
+        if len(set(lengths)) > 1:
+            min_length = min(lengths)
+            print(f"Warning: Modalities have different lengths {lengths}. Truncating to shortest length: {min_length}")
+            # Truncate all dataframes to the shortest length
+            self.data = {modality: df.iloc[:min_length].reset_index(drop=True) 
+                        for modality, df in data.items()}
+            self.smiles = smiles.iloc[:min_length].reset_index(drop=True)
+        else:
+            self.data = data
+            self.smiles = smiles
+            
+        # Double check lengths
+        self.length = len(self.smiles)
+        assert all(len(df) == self.length for df in self.data.values()), "Modality lengths don't match SMILES length"
 
     def __len__(self):
         return len(self.smiles)
     
     def __getitem__(self, idx):
+        if idx >= self.length:
+            raise IndexError(f"Index {idx} out of bounds for dataset of length {self.length}")
         # Process each modality
         processed_inputs = {}
         for modality, df in self.data.items():
@@ -116,7 +140,7 @@ class MultimodalSpectralSMILESDataset(torch.utils.data.Dataset):
             tokenized = tokenize_spectrum(
                 spectrum,
                 self.tokenization_methods[modality],
-                self.max_values[modality]
+                self.max_values[modality],
             )
             processed_inputs[modality] = torch.tensor(
                 tokenized,
@@ -179,6 +203,125 @@ def load_tokenized_data_with_smiles(df_train, df_test, method, smiles_vocab, max
     
     return train_loader, test_loader
 
+def load_tokenized_multimodal_data_with_smiles(
+    data_dict,
+    smiles_series,
+    tokenization_methods,
+    smiles_vocab,
+    max_values=None,
+    batch_size=32,
+):
+    '''Create train and test DataLoaders for multimodal spectral data with SMILES
+    
+    Args:
+        data_dict: Dictionary of DataFrames for each modality, e.g.,
+            {
+                'MS': ms_df_train,  # DataFrame with 'spectrum' column
+                'IR': ir_df_train   # DataFrame with 'spectrum' column
+            }
+        smiles_series: Pandas Series containing SMILES strings
+        tokenization_methods: Dictionary of tokenization methods for each modality, e.g.,
+            {
+                'MS': 'direct',
+                'IR': 'fourier2'
+            }
+        smiles_vocab: Vocabulary dictionary for SMILES tokenization
+        max_values: Dictionary of maximum values for each modality (optional)
+            If not provided, will be calculated from data
+        batch_size: Batch size for DataLoader
+        ms_peaks_only: boolean signifying whether MS data is full spectrum or only peaks
+    
+    Returns:
+        train_loader: DataLoader for training data
+        test_loader: DataLoader for test data
+    '''
+    # Calculate max values for each modality if not provided
+    if max_values is None:
+        max_values = {}
+        for modality, df in data_dict.items():
+            if 'spectrum' in df.columns:
+                max_values[modality] = calculate_max_mz(df, 'spectrum')
+            else:
+                raise ValueError(f"DataFrame for modality {modality} must contain 'spectrum' column")
+    
+    # Create dataset
+    dataset = MultimodalSpectralSMILESDataset(
+        data=data_dict,
+        smiles=smiles_series,
+        tokenization_methods=tokenization_methods,
+        max_values=max_values,
+        smiles_vocab=smiles_vocab,
+    )
+    
+    # Create DataLoader with multimodal collate function
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=multimodal_collate_fn
+    )
+    
+    return loader
+
+def split_and_load_tokenized_multimodal_data(
+    train_data_dict,
+    train_smiles,
+    test_data_dict,
+    test_smiles,
+    tokenization_methods,
+    smiles_vocab,
+    max_values=None,
+    batch_size=32,
+):
+    '''Create separate train and test DataLoaders for multimodal spectral data
+    
+    Args:
+        train_data_dict: Dictionary of training DataFrames for each modality
+        train_smiles: Pandas Series containing training SMILES strings
+        test_data_dict: Dictionary of test DataFrames for each modality
+        test_smiles: Pandas Series containing test SMILES strings
+        tokenization_methods: Dictionary of tokenization methods for each modality
+        smiles_vocab: Vocabulary dictionary for SMILES tokenization
+        max_values: Dictionary of maximum values for each modality (optional)
+        batch_size: Batch size for DataLoader
+        ms_peaks_only: boolean signifying whether MS data is full spectrum or only peaks
+    
+    Returns:
+        train_loader: DataLoader for training data
+        test_loader: DataLoader for test data
+    '''
+    # Calculate max values once if not provided
+    if max_values is None:
+        max_values = {}
+        # Use training data to calculate max values
+        for modality, df in train_data_dict.items():
+            if 'spectrum' in df.columns:
+                max_values[modality] = calculate_max_mz(df, 'spectrum')
+            else:
+                raise ValueError(f"DataFrame for modality {modality} must contain 'spectrum' column")
+    
+    # Create train loader
+    train_loader = load_tokenized_multimodal_data_with_smiles(
+        data_dict=train_data_dict,
+        smiles_series=train_smiles,
+        tokenization_methods=tokenization_methods,
+        smiles_vocab=smiles_vocab,
+        max_values=max_values,
+        batch_size=batch_size,
+    )
+    
+    # Create test loader
+    test_loader = load_tokenized_multimodal_data_with_smiles(
+        data_dict=test_data_dict,
+        smiles_series=test_smiles,
+        tokenization_methods=tokenization_methods,
+        smiles_vocab=smiles_vocab,
+        max_values=max_values,  # Use same max values as training
+        batch_size=batch_size
+    )
+    
+    return train_loader, test_loader
+
 def collate_fn(batch):
     '''collate and pad spectra and smiles from batch
 
@@ -214,66 +357,3 @@ def multimodal_collate_fn(batch):
         padded_smiles[i, :len(s)] = s
     
     return processed_inputs, padded_smiles
-
-def decode_beam_search_results(beams, inv_smiles_vocab):
-    '''Convert beam search results to SMILES strings
-    
-    Args:
-        beams: beam search results from MS_VIT_Seq2Seq_Beam
-        inv_smiles_vocab: inverse vocabulary mapping
-    '''
-    all_predictions = []
-    
-    for beam in beams:
-        predictions = []
-        for i in range(len(beam['sequences'])):
-            tokens = beam['sequences'][i].tolist()
-            smiles = ''.join([inv_smiles_vocab[token] for token in tokens 
-                            if token not in [0, 1, 2]])  # Exclude pad, sos, eos
-            score = beam['scores'][i].item()
-            predictions.append((smiles, score))
-        all_predictions.append(predictions)
-    
-    return all_predictions
-
-def evaluate_model_seq2seq_beam(model, test_loader, smiles_vocab, beam_width=5, verbose=0):
-    '''Evaluate sequence to sequence model with beam search
-    
-    Args:
-        model: MS_VIT_Seq2Seq_Beam model
-        test_loader: pytorch DataLoader for test data
-        smiles_vocab: vocabulary used in encoding SMILES values
-        beam_width: number of beams to maintain
-        verbose: verbosity level (0-1)
-    '''
-    device = next(model.parameters()).device
-    model.eval()
-    
-    inv_smiles_vocab = {v: k for k, v in smiles_vocab.items()}
-    all_predictions = []
-    all_true_smiles = []
-    
-    if verbose == 1:
-        pbar = tqdm(test_loader, desc='Evaluating', leave=False)
-    
-    with torch.no_grad():
-        for x_batch, y_seq_batch in test_loader:
-            x_batch = x_batch.to(device)
-            x_batch = x_batch.squeeze(1)
-            
-            # Get beam search predictions
-            beams = model.beam_search(x_batch, beam_width=beam_width)
-            batch_predictions = decode_beam_search_results(beams, inv_smiles_vocab)
-            all_predictions.extend(batch_predictions)
-            
-            # Get true SMILES
-            for seq in y_seq_batch:
-                true_smiles = ''.join([inv_smiles_vocab[token.item()] 
-                                     for token in seq 
-                                     if token.item() not in [0, 1, 2]])
-                all_true_smiles.append(true_smiles)
-            
-            if verbose == 1:
-                pbar.update(1)
-    
-    return all_predictions, all_true_smiles

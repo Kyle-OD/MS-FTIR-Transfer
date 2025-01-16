@@ -75,7 +75,7 @@ def peak_tokenization(spectrum_string, top_n=50, pad_to=50):
     
     return np.array(flattened).reshape(-1, 2)
 
-def tokenize_spectrum(spectrum, method, max_mz, window_size=16):
+def tokenize_spectrum(spectrum, method, max_mz, window_size=16, peaks_only=False):
     '''tokenize spectrum using specified method
 
     Args:
@@ -84,7 +84,7 @@ def tokenize_spectrum(spectrum, method, max_mz, window_size=16):
         max_mz: maximum m/z value
         window_size: size of each token window
     '''
-    if isinstance(spectrum, str):
+    if isinstance(spectrum, str) or peaks_only==True:
         binned_spectrum = bin_spectrum(spectrum, max_mz)
     else:
         binned_spectrum = spectrum

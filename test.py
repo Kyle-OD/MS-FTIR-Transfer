@@ -16,9 +16,9 @@ modalities = {
 }
 modalities_2 = {
     #'HSQC NMR': 'hsqc_nmr_spectrum',
-    #'H NMR': 'h_nmr_spectra',
-    #'C NMR': 'c_nmr_spectra',
-    #'MS/MS Iceberg Positive': 'msms_iceberg_positive',
+    'H NMR': 'h_nmr_spectra',
+    'C NMR': 'c_nmr_spectra',
+    'MS/MS Iceberg Positive': 'msms_iceberg_positive',
     'MS/MS Scarf Positive': 'msms_scarf_positive'
 }
 

@@ -6,7 +6,7 @@ from tqdm.notebook import tqdm # swap with line below if not using jupyter noteb
 #from tqdm import tqdm
 
 from transformer.io_funcs import load_seq2seq_from_meta, save_seq2seq_model_meta, init_checkpoint_folder
-from transformer.evaluation import evaluate_model_seq2seq
+from transformer.evaluation import evaluate_model_seq2seq, evaluate_multimodal_beam_model
 
 def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_seq, num_epochs=50, evaluate=True, verbose=1, checkpoint_path=None, from_checkpoint=None, meta_tag=None, use_tensorboard=False):
     '''train a transformer encoder/decoder model for spectra to SMILES
@@ -158,4 +158,159 @@ def train_model_seq2seq(model, train_loader, test_loader, optimizer, criterion_s
     if use_tensorboard:
         writer.close()
 
+    return model, history
+
+def train_multimodal_beam_model(
+    model, 
+    train_loader, 
+    test_loader, 
+    optimizer, 
+    criterion, 
+    num_epochs=50, 
+    evaluate=True, 
+    verbose=1, 
+    checkpoint_path=None, 
+    from_checkpoint=None, 
+    meta_tag=None, 
+    use_tensorboard=False
+):
+    '''Train a multimodal transformer model with beam search capabilities
+    
+    Args:
+        model: MultimodalVITSeq2SeqBeam model instance
+        train_loader: DataLoader for training data
+        test_loader: DataLoader for test data
+        optimizer: PyTorch optimizer
+        criterion: Loss criterion (typically CrossEntropyLoss)
+        num_epochs: Number of training epochs
+        evaluate: Whether to evaluate during training
+        verbose: Verbosity level (0-2)
+        checkpoint_path: Path to save checkpoints
+        from_checkpoint: Resume training from checkpoint
+        meta_tag: Metadata tag for logging
+        use_tensorboard: Whether to use TensorBoard logging
+    '''
+    device = next(model.parameters()).device
+    history = {
+        'train_loss': {},
+        'test_accuracy': {},
+        'test_loss': {},
+        'valid_smiles_percentage': {},
+        'tanimoto_similarity': {},
+        'dice_similarity': {},
+        'avg_edit_distance': {}
+    }
+
+    # TensorBoard setup
+    if use_tensorboard:
+        tb_log_dir = os.path.join('runs', datetime.now().strftime('%Y%m%d-%H%M%S'))
+        writer = SummaryWriter(log_dir=tb_log_dir)
+        print(f"TensorBoard logs will be saved to {tb_log_dir}")
+
+    # Initialize checkpoint folder and load from checkpoint if specified
+    if checkpoint_path is not None:
+        if from_checkpoint:
+            checkpoint_folder = os.path.join(checkpoint_path, from_checkpoint)
+            if os.path.exists(checkpoint_folder):
+                # Load checkpoint
+                checkpoint_files = [f for f in os.listdir(checkpoint_folder) if f.endswith('.pth')]
+                if checkpoint_files:
+                    latest_checkpoint = max(checkpoint_files, key=lambda x: int(x.split('_')[-1].split('.')[0]))
+                    checkpoint = torch.load(os.path.join(checkpoint_folder, latest_checkpoint))
+                    model.load_state_dict(checkpoint['model_state_dict'])
+                    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    start_epoch = checkpoint['epoch'] + 1
+                    print(f"Resuming from checkpoint: {latest_checkpoint}")
+                else:
+                    start_epoch = 0
+            else:
+                raise ValueError(f"Checkpoint folder {from_checkpoint} does not exist")
+        else:
+            checkpoint_folder = init_checkpoint_folder(checkpoint_path)
+            start_epoch = 0
+    else:
+        checkpoint_folder = None
+        start_epoch = 0
+
+    for epoch in range(start_epoch, num_epochs):
+        model.train()
+        total_loss = 0
+        
+        if verbose >= 1:
+            train_pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Train]', leave=False)
+        
+        for inputs, y_seq_batch in train_loader:
+            # Move inputs to device
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            y_seq_batch = y_seq_batch.to(device)
+            
+            optimizer.zero_grad()
+            
+            # Forward pass
+            outputs = model(inputs, y_seq_batch[:, :-1])
+            
+            # Calculate loss
+            loss = criterion(outputs.reshape(-1, outputs.size(-1)), y_seq_batch[:, 1:].reshape(-1))
+            
+            # Backward pass
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            
+            if verbose >= 1:
+                train_pbar.update(1)
+                train_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+        
+        avg_train_loss = total_loss / len(train_loader)
+        history['train_loss'][epoch] = avg_train_loss
+        
+        if use_tensorboard:
+            writer.add_scalar('train_loss', avg_train_loss, epoch)
+        
+        if evaluate:
+            eval_results = evaluate_multimodal_beam_model(
+                model, 
+                test_loader, 
+                train_loader.dataset.smiles_vocab,
+                verbose=verbose
+            )
+            
+            for metric, value in eval_results.items():
+                history[metric][epoch] = value
+                if use_tensorboard:
+                    writer.add_scalar(metric, value, epoch)
+            
+            if verbose >= 2:
+                print(f'Epoch {epoch+1}/{num_epochs}:')
+                print(f'  Train Loss: {avg_train_loss:.4f}')
+                print(f'  Test Loss: {eval_results["test_loss"]:.4f}')
+                print(f'  Valid SMILES: {eval_results["valid_smiles_percentage"]:.2f}%')
+                print(f'  Tanimoto Similarity: {eval_results["tanimoto_similarity"]:.4f}')
+                print(f'  Dice Similarity: {eval_results["dice_similarity"]:.4f}')
+                print(f'  Average Edit Distance: {eval_results["avg_edit_distance"]:.2f}')
+        
+        # Save checkpoint
+        if checkpoint_folder:
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': history['train_loss'][epoch],
+            }
+            if evaluate:
+                checkpoint.update({k: history[k][epoch] for k in eval_results.keys()})
+            
+            torch.save(
+                checkpoint,
+                os.path.join(checkpoint_folder, f"checkpoint_epoch_{epoch+1}.pth")
+            )
+            
+            # Save training history
+            with open(os.path.join(checkpoint_folder, "training_history.json"), "w") as f:
+                json.dump(history, f, indent=4)
+
+    if use_tensorboard:
+        writer.close()
+    
     return model, history

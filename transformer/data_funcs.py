@@ -4,28 +4,35 @@ import ast
 from transformer.evaluation import is_valid_smiles
 #from evaluation import is_valid_smiles
 
-def calculate_max_mz(df, spectrum_column='spectrum'):
+def calculate_max_mz(df, spectrum_column='spectrum', dtype=str):
     '''calculate the maximum m/z value in the dataset
 
     Args:
         df: pandas DataFrame containing spectrum data
         spectrum_column: name of the column containing spectrum data
     '''
-    def get_max_mz(spectrum_string):
+    def get_max_mz_str(spectrum_string):
         spectrum = ast.literal_eval(spectrum_string)
         return max(peak[0] for peak in spectrum)
+    
+    def get_max_mz_array(spectrum):
+        return max([peak[0] for peak in spectrum])
 
-    max_mz_series = df[spectrum_column].apply(get_max_mz)
+    if dtype is str:
+        max_mz_series = df[spectrum_column].apply(get_max_mz_str)
+    else:
+        max_mz_series = df[spectrum_column].apply(get_max_mz_array)
     return int(np.ceil(max_mz_series.max()))
 
-def bin_spectrum(spectrum_string, max_mz):
+def bin_spectrum(spectrum, max_mz):
     '''bin spectrum data into integer m/z values
 
     Args:
         spectrum_string: string representation of spectrum data
         max_mz: maximum m/z value to consider
     '''
-    spectrum = ast.literal_eval(spectrum_string)
+    if isinstance(spectrum, str):
+        spectrum = ast.literal_eval(spectrum)
     binned = np.zeros(max_mz + 1)  # +1 to include the max_mz value
     
     for mz, intensity in spectrum:
@@ -69,10 +76,3 @@ def remove_invalid_smiles(df):
 
     print(f"Shape after dropping invalid SMILES: {df.shape}")
     return df
-
-def format_ir_spectra(s):
-    s.strip('[]')
-    s=s.split()
-
-def format_ir_dataframe(df, data_column: str):
-    pass

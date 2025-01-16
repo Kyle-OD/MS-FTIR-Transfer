@@ -225,3 +225,99 @@ def plot_training_history(history):
     plt.tight_layout()
     plt.subplots_adjust(top=0.95)  # Adjust for the suptitle
     plt.show()
+
+def evaluate_multimodal_beam_model(model, test_loader, smiles_vocab, beam_width=5, verbose=0):
+    '''Evaluate multimodal transformer model with beam search
+    
+    Args:
+        model: MultimodalVITSeq2SeqBeam model instance
+        test_loader: DataLoader for test data
+        smiles_vocab: SMILES vocabulary dictionary
+        beam_width: Width for beam search
+        verbose: Verbosity level (0-1)
+    '''
+    device = next(model.parameters()).device
+    model.eval()
+    
+    inv_smiles_vocab = {v: k for k, v in smiles_vocab.items()}
+    all_predictions = []
+    all_true_smiles = []
+    total_loss = 0
+    
+    if verbose >= 1:
+        pbar = tqdm(test_loader, desc='Evaluating', leave=False)
+    
+    with torch.no_grad():
+        for inputs, y_seq_batch in test_loader:
+            # Move inputs to device
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            y_seq_batch = y_seq_batch.to(device)
+            
+            # Get beam search predictions
+            beams = model.beam_search(inputs, beam_width=beam_width)
+            
+            # Decode predictions
+            batch_predictions = decode_multimodal_beam_results(beams, inv_smiles_vocab)
+            all_predictions.extend(batch_predictions)
+            
+            # Get true SMILES
+            for seq in y_seq_batch:
+                true_smiles = ''.join([
+                    inv_smiles_vocab[token.item()]
+                    for token in seq
+                    if token.item() not in [0, 1, 2]  # Exclude pad, sos, eos
+                ])
+                all_true_smiles.append(true_smiles)
+            
+            # Calculate loss
+            outputs = model(inputs, y_seq_batch[:, :-1])
+            loss = torch.nn.functional.cross_entropy(
+                outputs.reshape(-1, outputs.size(-1)),
+                y_seq_batch[:, 1:].reshape(-1),
+                ignore_index=0  # ignore padding
+            )
+            total_loss += loss.item()
+            
+            if verbose >= 1:
+                pbar.update(1)
+    
+    # Get top predictions for each input
+    top_predictions = [pred[0][0] for pred in all_predictions]  # Get highest scoring prediction
+    
+    # Calculate metrics
+    valid_smiles_percentage = calculate_valid_smiles_percentage(top_predictions)
+    tanimoto_similarity = calculate_tanimoto_similarity(all_true_smiles, top_predictions)
+    dice_similarity = calculate_dice_similarity(all_true_smiles, top_predictions)
+    avg_edit_distance = calculate_average_edit_distance(all_true_smiles, top_predictions)
+    
+    return {
+        'test_loss': total_loss / len(test_loader),
+        'valid_smiles_percentage': valid_smiles_percentage * 100,
+        'tanimoto_similarity': tanimoto_similarity,
+        'dice_similarity': dice_similarity,
+        'avg_edit_distance': avg_edit_distance
+    }
+
+def decode_multimodal_beam_results(beams, inv_smiles_vocab):
+    '''Convert beam search results to SMILES strings with scores
+    
+    Args:
+        beams: Beam search results from model
+        inv_smiles_vocab: Inverse vocabulary mapping
+    '''
+    all_predictions = []
+    
+    for beam in beams:
+        predictions = []
+        for i in range(len(beam['sequences'])):
+            tokens = beam['sequences'][i].tolist()
+            smiles = ''.join([
+                inv_smiles_vocab[token]
+                for token in tokens
+                if token not in [0, 1, 2]  # Exclude pad, sos, eos
+            ])
+            score = beam['scores'][i].item()
+            predictions.append((smiles, score))
+        all_predictions.append(sorted(predictions, key=lambda x: x[1], reverse=True))
+    
+    return all_predictions
