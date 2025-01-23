@@ -1,6 +1,9 @@
+import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
 import os, json
+import pandas as pd
+from typing import List, Dict, Tuple, Union, Any
 from datetime import datetime
 from tqdm.notebook import tqdm # swap with line below if not using jupyter notebook
 #from tqdm import tqdm
@@ -314,3 +317,143 @@ def train_multimodal_beam_model(
         writer.close()
     
     return model, history
+
+def prepare_dataframes_for_prediction(
+    data_dict: Dict[str, pd.DataFrame],
+    spectrum_column: str = 'spectrum'
+    ) -> List[Dict[str, Any]]:
+    """
+    Convert dictionary of dataframes to format required for prediction.
+    
+    Args:
+        data_dict: Dictionary mapping modality type ('MS' or 'IR') to corresponding DataFrame
+        spectrum_column: Name of column containing spectrum data
+    
+    Returns:
+        List of dictionaries in format required by prepare_spectra_for_prediction
+    """
+    formatted_spectra = []
+    
+    # Process each modality's dataframe
+    for modality, df in data_dict.items():
+        if modality not in ['MS', 'IR']:
+            raise ValueError(f"Invalid modality type: {modality}")
+            
+        # Convert each row to required format
+        for _, row in df.iterrows():
+            formatted_spectra.append({
+                'type': modality,
+                'data': row[spectrum_column]
+            })
+    
+    return formatted_spectra
+
+def prepare_spectra_for_prediction(
+    spectra: List[Dict[str, Union[str, np.ndarray]]],
+    tokenization_methods: Dict[str, str],
+    max_values: Dict[str, int]
+    ) -> Dict[str, torch.Tensor]:
+    """
+    Prepare a list of pre-binned spectra for prediction.
+    
+    Args:
+        spectra: List of dictionaries containing spectral data
+                Each dict should have keys 'type' ('MS' or 'IR') and 'data' (pre-binned numpy array)
+        tokenization_methods: Dict mapping spectrum type to tokenization method
+        max_values: Dict mapping spectrum type to maximum m/z value
+    
+    Returns:
+        Dict mapping modality to batched tensor ready for model input
+    """
+    from transformer.tokenizers import tokenize_spectrum
+    
+    # Organize spectra by type
+    organized_spectra = {'MS': [], 'IR': []}
+    for spectrum in spectra:
+        spec_type = spectrum['type']
+        if spec_type not in ['MS', 'IR']:
+            raise ValueError(f"Invalid spectrum type: {spec_type}")
+        organized_spectra[spec_type].append(spectrum['data'])
+    
+    # Process each modality
+    processed_inputs = {}
+    for modality, spec_list in organized_spectra.items():
+        if not spec_list:  # Skip if no spectra of this type
+            continue
+            
+        # Convert to tokens (for pre-binned data, this mainly handles reshaping)
+        tokenized_spectra = []
+        for spec in spec_list:
+            tokenized = tokenize_spectrum(
+                spec,
+                tokenization_methods[modality],
+                max_values[modality],
+                peaks_only=False  # Since data is already binned
+            )
+            tokenized_spectra.append(tokenized)
+        
+        # Stack into batch
+        batch = torch.tensor(np.stack(tokenized_spectra), dtype=torch.float32).unsqueeze(1)
+        processed_inputs[modality] = batch
+    
+    return processed_inputs
+
+def predict_smiles_from_spectra(
+    model: torch.nn.Module,
+    spectra: List[Dict[str, Union[str, np.ndarray]]],
+    tokenization_methods: Dict[str, str],
+    max_values: Dict[str, int],
+    smiles_vocab: Dict[str, int],
+    beam_width: int = 5,
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+    ) -> List[List[Tuple[str, float]]]:
+    """
+    Predict SMILES strings from spectral data using beam search.
+    
+    Args:
+        model: Trained MultimodalVITSeq2SeqBeam model
+        spectra: List of dictionaries containing spectral data
+                Each dict should have keys 'type' ('MS' or 'IR') and 'data' (pre-binned numpy array)
+        tokenization_methods: Dict mapping spectrum type to tokenization method
+        max_values: Dict mapping spectrum type to maximum m/z value
+        smiles_vocab: SMILES vocabulary dictionary
+        beam_width: Number of top predictions to return
+        device: Device to run model on
+        
+    Returns:
+        List of lists, where each inner list contains (SMILES, score) tuples for the top predictions
+    """
+    # Prepare model
+    model = model.to(device)
+    model.eval()
+    
+    # Create inverse vocabulary mapping
+    inv_smiles_vocab = {v: k for k, v in smiles_vocab.items()}
+    
+    # Process input spectra
+    inputs = prepare_spectra_for_prediction(spectra, tokenization_methods, max_values)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    
+    # Get predictions using beam search
+    with torch.no_grad():
+        beams = model.beam_search(inputs, beam_width=beam_width)
+    
+    # Decode predictions
+    all_predictions = []
+    for beam in beams:
+        predictions = []
+        for i in range(len(beam['sequences'])):
+            tokens = beam['sequences'][i].tolist()
+            smiles = ''.join([
+                inv_smiles_vocab[token]
+                for token in tokens
+                if token not in [0, 1, 2]  # Exclude pad, sos, eos tokens
+            ])
+            score = beam['scores'][i].item()
+            predictions.append((smiles, score))
+        
+        # Sort by score and take top beam_width predictions
+        predictions = sorted(predictions, key=lambda x: x[1], reverse=True)[:beam_width]
+        all_predictions.append(predictions)
+    
+    return all_predictions
