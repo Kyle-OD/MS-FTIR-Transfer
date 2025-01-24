@@ -1,0 +1,11 @@
+{
+    "train_loss": {
+        "0": 1.1579835015615438
+    },
+    "test_accuracy": {},
+    "test_loss": {},
+    "valid_smiles_percentage": {},
+    "tanimoto_similarity": {},
+    "dice_similarity": {},
+    "avg_edit_distance": {}
+}

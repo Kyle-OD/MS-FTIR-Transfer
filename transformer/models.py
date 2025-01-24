@@ -610,7 +610,7 @@ class MultimodalVITSeq2SeqBeam(nn.Module):
             eos_idx: end of sequence token index
         '''
         device = next(self.parameters()).device
-        batch_size = src.size(0)
+        batch_size = next(iter(src.values())).size(0)
         
         # Encode input
         memory = self.encode(src)
@@ -708,13 +708,16 @@ class MultimodalVITSeq2SeqBeam(nn.Module):
                 top_indices = scores.argsort(descending=True)[:beam_width]
                 
                 beams[b] = {
+                    #'sequences': torch.stack([candidates['sequences'][i] for i in top_indices]),
                     'sequences': torch.stack([candidates['sequences'][i] for i in top_indices]),
                     'scores': torch.tensor([candidates['scores'][i] for i in top_indices], device=device),
                     'finished': [candidates['finished'][i] for i in top_indices],
                     'length_normalized_scores': scores[top_indices]
                 }
+                print(beams)
         
         return beams
+    
     # def beam_search(self, inputs, beam_width=5, max_len=100, sos_idx=1, eos_idx=2):
     #     '''Perform beam search to get top k most likely sequences
         
